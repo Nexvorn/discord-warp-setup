@@ -48,7 +48,7 @@ rules:
   - IP-CIDR,195.62.89.0/24,DISCORD,no-resolve
   - IP-CIDR6,2a0e:5940::/29,DISCORD,no-resolve
   # 4) Discord voice/video media on Cloudflare Realtime (seen: 104.29.147.x:1930x) - browsers only
-  - AND,((IP-CIDR,104.28.0.0/15,no-resolve),(PROCESS-NAME-REGEX,(?i)^(chrome|msedge)\.exe$)),DISCORD
+  - AND,((IP-CIDR,104.28.0.0/15,no-resolve),(PROCESS-NAME-REGEX,(?i)^(chrome|msedge|brave|firefox|opera|vivaldi)\.exe$)),DISCORD
   - MATCH,DIRECT
 
 dns:

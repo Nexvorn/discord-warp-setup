@@ -200,6 +200,7 @@ $ver = (Get-Content (Join-Path $PSScriptRoot 'version.txt') -Raw).Trim()
 Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like "*$dw\App.ps1*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }   # old app instance
 foreach ($f in 'App.ps1', 'DiscordWarpLib.ps1', 'Update.ps1', 'Uninstall.ps1', 'version.txt') { Copy-Item (Join-Path $PSScriptRoot $f) $dw -Force }
 Set-Content -LiteralPath (Join-Path $dw 'installed-version.txt') -Value $ver -Encoding ASCII
+Set-Content -LiteralPath (Join-Path $dw 'first-run.flag') -Value $ver -Encoding ASCII   # app shows the welcome / next steps once
 Add-Type -AssemblyName System.Drawing
 $bmp = New-Object Drawing.Bitmap 64, 64; $g = [Drawing.Graphics]::FromImage($bmp); $g.SmoothingMode = 'AntiAlias'
 $g.FillEllipse((New-Object Drawing.SolidBrush ([Drawing.ColorTranslator]::FromHtml('#5865F2'))), 2, 2, 60, 60)
