@@ -52,6 +52,10 @@ Act "remove NRPT rules DiscordWARP ($(@(Get-DnsClientNrptRule | Where-Object Com
   Get-DnsClientNrptRule | Where-Object Comment -eq 'DiscordWARP' | ForEach-Object { Remove-DnsClientNrptRule -Name $_.Name -Force }; Clear-DnsClientCache }
 Act "remove Start menu folder $startMenu" { if (Test-Path $startMenu) { Remove-Item $startMenu -Recurse -Force } }
 Act "remove Apps entry $appsKey" { if (Test-Path $appsKey) { Remove-Item $appsKey -Force } }
+Act 'stop the Discord WARP app (tray)' { Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like "*$dw\App.ps1*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force } }
+Act 'remove autostart value HKCU Run "Discord WARP Tray"' { Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Discord WARP Tray' -ErrorAction Stop }
+$desk = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Discord WARP.lnk'
+Act "remove desktop shortcut $desk" { if (Test-Path $desk) { Remove-Item $desk -Force } }
 Act 'stop Clash Verge GUI' { Get-Process clash-verge -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 2 }
 
 if ($Mode -eq 'Settings') {
@@ -61,6 +65,8 @@ if ($Mode -eq 'Settings') {
       $t = [IO.File]::ReadAllText($vy)
       foreach ($k in 'enable_tun_mode', 'enable_auto_launch', 'enable_silent_start') { $t = [regex]::Replace($t, "(?m)^${k}:.*$", "${k}: false") }
       [IO.File]::WriteAllText($vy, $t, (New-Object Text.UTF8Encoding($false))) } }
+  Act 'undo a pause (service back to Automatic, remove paused flag)' {
+    Set-Service clash_verge_service -StartupType Automatic -ErrorAction SilentlyContinue; Remove-Item (Join-Path $dw 'paused.flag') -Force -ErrorAction SilentlyContinue }
 } else {
   # 4. Full: Clash Verge service + program + data, then our folder
   $su = Join-Path $cvHome 'resources\clash-verge-service-uninstall.exe'

@@ -7,6 +7,7 @@ $api = "$PSScriptRoot\mihomo-conns.ps1"
 function Write-HealLog($t) { "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $t" | Out-File $log -Append -Encoding utf8 }
 function Show-Alert($t) { msg.exe $env:USERNAME /TIME:0 "Discord WARP: $t" 2>$null }
 if ((Test-Path $log) -and (Get-Item $log).Length -gt 512KB) { Move-Item $log "$log.old" -Force }
+if (Test-Path "$PSScriptRoot\paused.flag") { Write-HealLog 'paused by the user (Discord WARP app) - nothing to do'; return }
 
 # One round = 4 delay tests through WARP to the Discord API; round passes if >= 3 succeed under 300 ms.
 # v3 (2026-11-11): was cp.cloudflare.com + 800 ms - that passed a slow tunnel (500-900 ms) and a tunnel that only

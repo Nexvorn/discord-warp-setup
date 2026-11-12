@@ -3,7 +3,7 @@
 # (the installer is re-runnable: it updates settings/scripts and keeps this PC's WARP account).
 # Never updates silently. Works only while the repository is public.
 # NOTE: contains Arabic UI text - saved as UTF-8 WITH BOM by build.ps1.
-param([string]$Repo = 'Nexvorn/discord-warp-setup', [switch]$CheckOnly)
+param([string]$Repo = 'Nexvorn/discord-warp-setup', [switch]$CheckOnly, [switch]$Yes)   # -Yes: the app already asked the user
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 $dw = Join-Path $env:USERPROFILE '.discord-warp'
@@ -25,8 +25,9 @@ if ([version]$latest -le [version]$cur) { Say "لديك آخر نسخة ($cur). 
 if ($CheckOnly) { "update available: $cur -> $latest"; exit 0 }
 
 $notes = [string]$rel.body; if ($notes.Length -gt 500) { $notes = $notes.Substring(0, 500) + ' ...' }
-$a = Say ("توجد نسخة جديدة: $latest (نسختك: $cur)`n`n$notes`n`nهل تريد التحديث الآن؟ سيطلب Windows صلاحية المسؤول.") 'Question' 'YesNo'
-if ($a -ne 'Yes') { exit 0 }
+if (-not $Yes) {
+  $a = Say ("توجد نسخة جديدة: $latest (نسختك: $cur)`n`n$notes`n`nهل تريد التحديث الآن؟ سيطلب Windows صلاحية المسؤول.") 'Question' 'YesNo'
+  if ($a -ne 'Yes') { exit 0 } }
 
 $asset = $rel.assets | Where-Object { $_.name -eq 'DiscordWARP-Setup.zip' } | Select-Object -First 1
 if (-not $asset -or -not $asset.digest -or $asset.digest -notmatch '^sha256:([0-9a-f]{64})$') {
@@ -40,6 +41,10 @@ Invoke-WebRequest $asset.browser_download_url -OutFile $zip -UseBasicParsing -He
 $got = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
 if ($got -ne $want) { Remove-Item $tmp -Recurse -Force; Say 'بصمة الملف المحمّل لا تطابق البصمة المنشورة. تم إلغاء التحديث.' 'Error' | Out-Null; exit 1 }
 Expand-Archive $zip -DestinationPath $tmp -Force
-$cmd = Get-ChildItem $tmp -Recurse -Filter 'Install-DiscordWARP.cmd' | Select-Object -First 1
-if (-not $cmd) { Say 'ملف التثبيت غير موجود داخل التحديث.' 'Error' | Out-Null; exit 1 }
-Start-Process -FilePath $cmd.FullName -WorkingDirectory $cmd.DirectoryName
+$appPs = Get-ChildItem $tmp -Recurse -Filter 'App.ps1' | Where-Object { Test-Path (Join-Path $_.DirectoryName 'Install.ps1') } | Select-Object -First 1
+if ($appPs) {   # v1.2+: the new package's app installs with a progress view (no second question)
+  Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile -STA -ExecutionPolicy Bypass -File `"$($appPs.FullName)`" -AutoInstall"
+} else {
+  $cmd = Get-ChildItem $tmp -Recurse -Filter 'Install-DiscordWARP.cmd' | Select-Object -First 1
+  if (-not $cmd) { Say 'ملف التثبيت غير موجود داخل التحديث.' 'Error' | Out-Null; exit 1 }
+  Start-Process -FilePath $cmd.FullName -WorkingDirectory $cmd.DirectoryName }
