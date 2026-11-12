@@ -3,7 +3,7 @@
   Build the one-click package  dist\DiscordWARP-Setup\  and  dist\DiscordWARP-Setup.zip  from src\.
 .DESCRIPTION
   - Copies src\ (cmd files, Arabic guide, setup scripts, profile template, helper scripts).
-  - Downloads the official binaries once into cache\ (Clash Verge Rev x64 setup, wgcf) and checks their SHA-256
+  - Downloads the official binaries once into cache\ (mihomo engine zip, wgcf) and checks their SHA-256
     against the GitHub asset digests pinned in src\setup\DiscordWarpLib.ps1.
   - Re-encodes setup\*.ps1 as UTF-8 WITH BOM (Windows PowerShell 5.1 needs it for the Arabic UI text) and parse-checks every script.
   - Adds LICENSE and THIRD_PARTY_NOTICES.md, writes SHA256SUMS.txt, zips.
@@ -29,6 +29,18 @@ foreach ($name in $script:DW_Bins.Keys) {
   Copy-Item $c "$dist\bin\$name" -Force
   Write-Host "ok  $name  sha256 $h"
 }
+# app icon (Start menu, desktop, Apps entry): Discord-blue circle with a white dot, PNG-compressed multi-size .ico
+Add-Type -AssemblyName System.Drawing
+$sizes = 16, 32, 48, 256; $pngs = @()
+foreach ($s in $sizes) {
+  $bmp = New-Object Drawing.Bitmap $s, $s; $g = [Drawing.Graphics]::FromImage($bmp); $g.SmoothingMode = 'AntiAlias'
+  $g.FillEllipse((New-Object Drawing.SolidBrush ([Drawing.ColorTranslator]::FromHtml('#5865F2'))), [float]($s * 0.03), [float]($s * 0.03), [float]($s * 0.94), [float]($s * 0.94))
+  $d = $s * 0.32; $g.FillEllipse((New-Object Drawing.SolidBrush ([Drawing.Color]::White)), [float](($s - $d) / 2), [float](($s - $d) / 2), [float]$d, [float]$d); $g.Dispose()
+  $ms = New-Object IO.MemoryStream; $bmp.Save($ms, [Drawing.Imaging.ImageFormat]::Png); $pngs += , $ms.ToArray(); $bmp.Dispose() }
+$fs = [IO.File]::Create("$dist\setup\app.ico"); $w = New-Object IO.BinaryWriter $fs
+$w.Write([uint16]0); $w.Write([uint16]1); $w.Write([uint16]$sizes.Count); $off = 6 + 16 * $sizes.Count
+for ($i = 0; $i -lt $sizes.Count; $i++) { $s = $sizes[$i]; $w.Write([byte]($s % 256)); $w.Write([byte]($s % 256)); $w.Write([byte]0); $w.Write([byte]0); $w.Write([uint16]1); $w.Write([uint16]32); $w.Write([uint32]$pngs[$i].Length); $w.Write([uint32]$off); $off += $pngs[$i].Length }
+foreach ($p in $pngs) { $w.Write($p) }; $w.Close()
 foreach ($f in Get-ChildItem "$dist\setup" -Filter *.ps1 -File) {
   $t = [IO.File]::ReadAllText($f.FullName, [Text.Encoding]::UTF8)
   [IO.File]::WriteAllText($f.FullName, $t, (New-Object Text.UTF8Encoding($true)))

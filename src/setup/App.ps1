@@ -1,94 +1,61 @@
 # Discord WARP - desktop app (Windows PowerShell 5.1 + WPF, Arabic UI, single page + tray icon).
 # Modes:  (default)  show the window (+ tray icon; closing the window keeps the tray icon)
 #         -Tray      start hidden in the tray (used at logon)
-#         -Action Pause|Resume   admin helper (started elevated by the app itself)
+#         Pause/Resume/Repair are command files for the engine supervisor (Engine.ps1, SYSTEM) - no admin prompt
 #         -SelfTest  build the window without showing it, run the status/check logic, print results, exit
 # In the package folder (not installed yet) the window offers "Install" and shows the installer's progress.
 # NOTE: contains Arabic UI text - saved as UTF-8 WITH BOM by build.ps1.
-param([switch]$Tray, [ValidateSet('', 'Pause', 'Resume')][string]$Action = '', [switch]$SelfTest, [switch]$AutoInstall, [switch]$Preview)
+param([switch]$Tray, [switch]$SelfTest, [switch]$AutoInstall, [switch]$Preview)
 $ErrorActionPreference = 'Continue'
 $here = $PSScriptRoot
 . (Join-Path $here 'DiscordWarpLib.ps1')
-$dw         = Join-Path $env:USERPROFILE '.discord-warp'
-$cvExe      = Join-Path $env:ProgramFiles 'Clash Verge\clash-verge.exe'
-$pausedFlag = Join-Path $dw 'paused.flag'
+$prog       = Join-Path $env:ProgramFiles 'DiscordWARP'            # engine + scripts (installed app runs from $prog\scripts)
+$data       = Join-Path $env:ProgramData 'DiscordWARP'             # engine config, account (private), logs, cmd, version
+$userDir    = Join-Path $env:LOCALAPPDATA 'DiscordWARP'            # per-user: first-run flag, update snooze
+$pausedFlag = Join-Path $data 'paused.flag'
+$cmdDir     = Join-Path $data 'cmd'
 $Repo       = 'Nexvorn/discord-warp-setup'
-$isPackage  = (Test-Path (Join-Path $here 'Install.ps1')) -and ($here.TrimEnd('\') -ne $dw.TrimEnd('\'))
+$isPackage  = (Test-Path (Join-Path $here 'Install.ps1')) -and ($here.TrimEnd('\') -ne (Join-Path $prog 'scripts'))
 if ($Preview) { $isPackage = $false }   # -Preview: show the installed-app view from any folder; Pause/Update/Uninstall disabled
 $appVersion = if (Test-Path (Join-Path $here 'version.txt')) { (Get-Content (Join-Path $here 'version.txt') -Raw).Trim() } else { '?' }
-
-# ======================= admin helper actions (run elevated, no window) =======================
-if ($Action) {
-  $log = Join-Path $dw 'app-actions.log'
-  function ALog($m) { Add-Content -LiteralPath $log -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') [$Action] $m" -Encoding UTF8 }
-  if ($Action -eq 'Pause') {
-    Set-Content -LiteralPath $pausedFlag -Value (Get-Date -Format o) -Encoding ASCII
-    Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Clash Verge' -ErrorAction SilentlyContinue
-    Get-Process clash-verge -ErrorAction SilentlyContinue | Stop-Process -Force
-    Stop-Service clash_verge_service -Force -ErrorAction SilentlyContinue
-    Set-Service clash_verge_service -StartupType Manual -ErrorAction SilentlyContinue
-    Get-Process verge-mihomo -ErrorAction SilentlyContinue | Stop-Process -Force
-    Get-DnsClientNrptRule | Where-Object Comment -eq 'DiscordWARP' | ForEach-Object { Remove-DnsClientNrptRule -Name $_.Name -Force }
-    Clear-DnsClientCache
-    ALog 'paused: GUI+core stopped, service Manual, NRPT removed, autostart removed'
-  } else {
-    Set-Service clash_verge_service -StartupType Automatic -ErrorAction SilentlyContinue
-    Start-Service clash_verge_service -ErrorAction SilentlyContinue
-    if (-not @(Get-DnsClientNrptRule | Where-Object Comment -eq 'DiscordWARP').Count) {
-      $ns = @(); foreach ($d in $script:DW_NrptDomains) { $ns += $d; $ns += ".$d" }; $ns += 'discord-attachments-uploads-prd.storage.googleapis.com'
-      Add-DnsClientNrptRule -Namespace $ns -NameServers '198.18.0.2' -Comment 'DiscordWARP' -DisplayName 'Discord via Clash WARP' | Out-Null }
-    Clear-DnsClientCache
-    Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Clash Verge' -Value "`"$cvExe`""
-    Remove-Item -LiteralPath $pausedFlag -Force -ErrorAction SilentlyContinue
-    Start-Process explorer.exe -ArgumentList "`"$cvExe`""     # GUI without admin rights
-    ALog 'resumed: service Automatic+started, NRPT restored, autostart restored, GUI started'
-  }
-  exit 0
-}
-
+New-Item -ItemType Directory -Force $userDir | Out-Null
+function Send-EngineCommand([string]$c) { Set-Content -LiteralPath (Join-Path $cmdDir $c) -Value (Get-Date -Format o) -Encoding ASCII }   # picked up by Engine.ps1 within 2 s
 # ======================= background work (each runs in its own runspace) =======================
 $StatusWork = {
-  param($dw, $cvExe)
-  $r = @{ installed = (Test-Path (Join-Path $dw 'verify.ps1')) -and (Test-Path $cvExe); paused = Test-Path (Join-Path $dw 'paused.flag') }
+  param($prog, $data)
+  $r = @{ installed = (Test-Path (Join-Path $prog 'mihomo.exe')) -and (Test-Path (Join-Path $prog 'scripts\verify.ps1')); paused = Test-Path (Join-Path $data 'paused.flag') }
   if (-not $r.installed -or $r.paused) { return $r }
-  $r.svc  = (Get-Service clash_verge_service -ErrorAction SilentlyContinue).Status -eq 'Running'
-  $r.gui  = [bool](Get-Process clash-verge -ErrorAction SilentlyContinue)
-  $r.core = [bool](Get-Process verge-mihomo -ErrorAction SilentlyContinue)
-  $r.meta = (Get-NetAdapter -Name Meta -ErrorAction SilentlyContinue).Status -eq 'Up'
+  $r.core = [bool](Get-Process mihomo -ErrorAction SilentlyContinue)
+  $r.svc  = $r.core
+  $r.meta = (Get-NetAdapter -Name 'DiscordWARP' -ErrorAction SilentlyContinue).Status -eq 'Up'
   $r.nrpt = @(Get-DnsClientNrptRule -ErrorAction SilentlyContinue | Where-Object Comment -eq 'DiscordWARP').Count -gt 0
   if ($r.core) {
-    try { $x = & (Join-Path $dw 'mihomo-conns.ps1') -ApiPath '/proxies/WARP/delay?url=https%3A%2F%2Fdiscord.com%2Fapi%2Fv9%2Fgateway&timeout=5000' -Raw | ConvertFrom-Json
+    try { $x = & (Join-Path $prog 'scripts\mihomo-conns.ps1') -ApiPath '/proxies/WARP/delay?url=https%3A%2F%2Fdiscord.com%2Fapi%2Fv9%2Fgateway&timeout=5000' -Raw | ConvertFrom-Json
           $r.delay = $x.delay; $r.err = $x.message } catch { $r.err = $_.Exception.Message } }
   return $r
 }
-$CheckWork = { param($dw) & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $dw 'verify.ps1') 2>&1 | Out-String -Width 250 }
-$RepairWork = {
-  param($cvExe)
-  Get-Process clash-verge -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 2
-  Start-Process $cvExe; Start-Sleep 25; 'ok'
-}
+$CheckWork = { param($scripts) & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $scripts 'verify.ps1') 2>&1 | Out-String -Width 250 }
+$RepairWork = { param($cmdDir) Set-Content -LiteralPath (Join-Path $cmdDir 'restart') -Value '1' -Encoding ASCII; Start-Sleep 15; 'ok' }
 $ReportWork = {
-  param($dw, $cvExe)
+  param($prog, $data)
   $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
   $tmp = Join-Path $env:TEMP "DiscordWARP-report-$stamp"; New-Item -ItemType Directory -Force $tmp | Out-Null
   function Mask([string]$t) { $t = [regex]::Replace($t, '(?m)(private-key|PrivateKey|secret|access_token|license_key|device_id)(\s*[:=]\s*)\S+', '$1$2<hidden>')
     [regex]::Replace($t, 'ip=(\d+\.\d+)\.\d+\.\d+', 'ip=$1.x.x') }
   $sys = @()
-  $sys += "report: $stamp | app version: $(if (Test-Path "$dw\installed-version.txt") { (Get-Content "$dw\installed-version.txt" -Raw).Trim() } else { '?' })"
+  $sys += "report: $stamp | Discord WARP $(try { (Get-Content (Join-Path $data 'version.txt') -Raw).Trim() } catch { '?' }) | paused: $(Test-Path (Join-Path $data 'paused.flag'))"
   $sys += "OS: $((Get-CimInstance Win32_OperatingSystem).Caption) $([Environment]::OSVersion.Version) | last boot: $((Get-CimInstance Win32_OperatingSystem).LastBootUpTime)"
-  $sys += "Clash Verge: $((Get-Item $cvExe -ErrorAction SilentlyContinue).VersionInfo.ProductVersion) | paused: $(Test-Path "$dw\paused.flag")"
-  $sys += "service: $((Get-Service clash_verge_service -ErrorAction SilentlyContinue).Status) / $((Get-Service clash_verge_service -ErrorAction SilentlyContinue).StartType)"
-  $sys += "processes: " + ((Get-Process clash-verge, verge-mihomo, Discord, 'Cloudflare WARP' -ErrorAction SilentlyContinue | Group-Object Name | ForEach-Object { "$($_.Name) x$($_.Count)" }) -join ', ')
+  $sys += "engine: $(try { (& (Join-Path $prog 'mihomo.exe') -v) -join ' ' } catch { 'missing' }) | running: $([bool](Get-Process mihomo -ErrorAction SilentlyContinue))"
+  $sys += "processes: " + ((Get-Process mihomo, Discord, verge-mihomo, clash-verge, 'Cloudflare WARP' -ErrorAction SilentlyContinue | Group-Object Name | ForEach-Object { "$($_.Name) x$($_.Count)" }) -join ', ')
   $sys += "adapters up: " + ((Get-NetAdapter | Where-Object Status -eq 'Up' | ForEach-Object { "$($_.Name) [$($_.InterfaceDescription)]" }) -join '; ')
   $sys += "default routes: " + ((Get-NetRoute -DestinationPrefix 0.0.0.0/0 -ErrorAction SilentlyContinue | ForEach-Object { "$($_.InterfaceAlias) m$($_.RouteMetric)" }) -join '; ')
   $sys += "NRPT DiscordWARP rules: $(@(Get-DnsClientNrptRule | Where-Object Comment -eq 'DiscordWARP').Count)"
   $sys += "official WARP: " + ((& "$env:ProgramFiles\Cloudflare\Cloudflare WARP\warp-cli.exe" status 2>&1) -join ' ')
   Set-Content (Join-Path $tmp 'system.txt') (Mask ($sys -join "`r`n")) -Encoding UTF8
-  if (Test-Path "$dw\verify.ps1") { Set-Content (Join-Path $tmp 'verify.txt') (Mask (& powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$dw\verify.ps1" 2>&1 | Out-String -Width 250)) -Encoding UTF8 }
-  foreach ($f in @(Get-ChildItem $dw -Filter 'install-*.log' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 2) + @(Get-Item "$dw\selfheal.log", "$dw\app-actions.log" -ErrorAction SilentlyContinue)) {
+  Set-Content (Join-Path $tmp 'verify.txt') (Mask (& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $prog 'scripts\verify.ps1') 2>&1 | Out-String -Width 250)) -Encoding UTF8
+  $logs = Join-Path $data 'logs'
+  foreach ($f in @(Get-ChildItem $logs -Filter 'install-*.log' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 2) + @(Get-Item (Join-Path $logs 'engine-supervisor.log'), (Join-Path $logs 'engine.log') -ErrorAction SilentlyContinue)) {
     Set-Content (Join-Path $tmp $f.Name) (Mask (Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue)) -Encoding UTF8 }
-  $cl = Join-Path $env:APPDATA 'io.github.clash-verge-rev.clash-verge-rev\logs\latest.log'
-  if (Test-Path $cl) { Set-Content (Join-Path $tmp 'clash-verge-latest.log') (Mask (Get-Content $cl -Raw)) -Encoding UTF8 }
   $zip = Join-Path ([Environment]::GetFolderPath('Desktop')) "DiscordWARP-report-$stamp.zip"
   Compress-Archive -Path "$tmp\*" -DestinationPath $zip -Force; Remove-Item $tmp -Recurse -Force
   $zip
@@ -103,10 +70,10 @@ $UpdateCheckWork = {
 
 # ======================= translation of verify.ps1 lines =======================
 $Tr = @(
-  @('Clash Verge service running', 'خدمة Clash Verge تعمل'), @('Clash Verge service not running', 'خدمة Clash Verge متوقفة'),
-  @('Clash Verge app running', 'برنامج Clash Verge يعمل'), @('Clash Verge app not running', 'برنامج Clash Verge مغلق'),
-  @('mihomo core running', 'محرك الاتصال يعمل'), @('mihomo core not running', 'محرك الاتصال متوقف'),
-  @("TUN adapter 'Meta' up", 'محوّل النفق يعمل'), @('TUN adapter', 'محوّل النفق لا يعمل'),
+  @('DiscordWARP service running', 'خدمة Discord WARP تعمل'), @('DiscordWARP service not running', 'خدمة Discord WARP متوقفة'),
+  @('no other engine', 'لا يوجد برنامج آخر يتعارض مع النفق'), @('another engine running', 'يوجد برنامج آخر يتعارض مع النفق (Clash Verge)'), @('paused by the user', 'متوقف مؤقتاً من التطبيق'),
+  @('engine running', 'محرك الاتصال يعمل'), @('engine not running', 'محرك الاتصال متوقف'),
+  @("TUN adapter 'DiscordWARP' up", 'محوّل النفق يعمل'), @('TUN adapter', 'محوّل النفق لا يعمل'),
   @('TUN routes present', 'مسارات الديسكورد داخل النفق'), @('TUN routes missing', 'بعض مسارات الديسكورد مفقودة'),
   @('default route via', 'باقي البرامج تستخدم الإنترنت العادي'), @('default route goes through the TUN', 'كل الإنترنت يمر بالنفق (خطأ)'),
   @('NRPT Discord rule present', 'أسماء الديسكورد توجَّه إلى النفق'), @('NRPT Discord rule missing', 'توجيه أسماء الديسكورد مفقود'),
@@ -120,11 +87,11 @@ $Tr = @(
   @('Discord connections NOT via WARP', 'بعض اتصالات الديسكورد لا تمر عبر WARP'),
   @('no non-Discord process uses WARP', 'لا يوجد برنامج آخر يستخدم WARP'), @('non-Discord processes using WARP', 'برامج أخرى تستخدم WARP'),
   @('last call', 'آخر مكالمة صوتية مرّت عبر WARP'), @('last media server', 'خادم آخر مكالمة داخل النفق'),
-  @('no voice call found', 'لا توجد مكالمة سابقة للفحص'), @('mihomo API not reachable', 'تعذّر الاتصال بمحرك Clash'))
+  @('no voice call found', 'لا توجد مكالمة سابقة للفحص'), @('mihomo API not reachable', 'تعذّر الاتصال بمحرك الاتصال'), @('versions:', 'الإصدارات'))
 function Convert-VerifyLine([string]$line) {
   $m = [regex]::Match($line, '^\[(PASS|FAIL|WARN|INFO)\]\s+(.*)$'); if (-not $m.Success) { return $null }
   $st = $m.Groups[1].Value; $txt = $m.Groups[2].Value
-  if ($st -eq 'INFO' -and $txt -match '^Discord app-') { return $null }
+  if ($st -eq 'INFO' -and $txt -match '^versions:') { return $null }
   $ar = $null; foreach ($t in $Tr) { if ($txt.StartsWith($t[0])) { $ar = $t[1]; break } }
   $ms = [regex]::Match($txt, '(\d+) ms'); if ($ar -and $ms.Success) { $ar += " ($($ms.Groups[1].Value) ms)" }
   if (-not $ar) { $ar = $txt }
@@ -133,8 +100,8 @@ function Convert-VerifyLine([string]$line) {
 
 if ($SelfTest) {
   "isPackage=$isPackage appVersion=$appVersion"
-  $s = & $StatusWork $dw $cvExe; "status: " + (($s.GetEnumerator() | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join ' ')
-  if ($s.installed) { $out = & $CheckWork $dw; $rows = @($out -split "`r?`n" | ForEach-Object { Convert-VerifyLine $_ } | Where-Object { $_ })
+  $s = & $StatusWork $prog $data; "status: " + (($s.GetEnumerator() | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join ' ')
+  if ($s.installed) { $out = & $CheckWork (Join-Path $prog 'scripts'); $rows = @($out -split "`r?`n" | ForEach-Object { Convert-VerifyLine $_ } | Where-Object { $_ })
     "check rows: $($rows.Count)"; $rows | ForEach-Object { "  [$($_.State)] $($_.Text)" }; "untranslated: $(@($rows | Where-Object { $_.Text -match '^[A-Za-z]' }).Count)" }
 }
 
@@ -292,7 +259,7 @@ function Apply-Status($r) {
   elseif (-not $r.installed) { $title = 'غير مثبّت'; $sub = if ($isPackage) { 'اضغط "تثبيت" للبدء. يستغرق 2 إلى 5 دقائق.' } else { 'شغّل ملف التثبيت.' } }
   elseif ($r.paused -and $isPackage) { $title = 'مثبّت (متوقف مؤقتاً)'; $sub = 'التثبيت سيعيد التشغيل.' }
   elseif ($r.paused) { $title = 'متوقف مؤقتاً'; $sub = 'الديسكورد لا يمر عبر WARP الآن. اضغط "تشغيل" للعودة.' }
-  elseif (-not ($r.svc -and $r.core -and $r.meta)) { $state = 'red'; $title = 'Clash Verge لا يعمل'; $sub = 'اضغط "إصلاح".' }
+  elseif (-not ($r.svc -and $r.core -and $r.meta)) { $state = 'red'; $title = 'محرك الاتصال لا يعمل'; $sub = 'اضغط "إصلاح".' }
   elseif (-not $r.nrpt) { $state = 'red'; $title = 'إعداد ناقص'; $sub = 'توجيه أسماء الديسكورد مفقود. أعد التثبيت.' }
   elseif (-not $r.delay) { $state = 'red'; $title = 'نفق WARP لا يستجيب'; $sub = 'اضغط "إصلاح". إذا استمرت المشكلة اضغط "تقرير للمساعدة".' }
   elseif ($r.delay -gt 300) { $state = 'orange'; $title = 'الاتصال بطيء'; $sub = "السرعة: $($r.delay) ms. جرّب ""إصلاح"" إذا كان الديسكورد بطيئاً." }
@@ -312,12 +279,12 @@ function Apply-Status($r) {
   if ($script:lastState -in 'green','orange' -and $state -eq 'red') { $notify.ShowBalloonTip(5000, 'Discord WARP', "$title - افتح التطبيق واضغط ""إصلاح"".", 'Warning') }
   $script:lastState = $state
 }
-function Update-Status { Start-Bg $StatusWork @($dw, $cvExe) { param($res) Apply-Status ($res | Select-Object -Last 1) } }
+function Update-Status { Start-Bg $StatusWork @($prog, $data) { param($res) Apply-Status ($res | Select-Object -Last 1) } }
 
 # ---- buttons ----
 $ui.BtnCheck.Add_Click({
   Set-Busy $true 'جارٍ الفحص الشامل... (حوالي 15 ثانية)'; Clear-List 'نتيجة الفحص الشامل'
-  Start-Bg $CheckWork @($dw) { param($res)
+  Start-Bg $CheckWork @($here) { param($res)
     $rows = @(([string]($res -join "`n")) -split "`r?`n" | ForEach-Object { Convert-VerifyLine $_ } | Where-Object { $_ })
     foreach ($row in $rows) { Add-Row $row.State $row.Text }
     $f = @($rows | Where-Object State -eq 'FAIL').Count; $p = @($rows | Where-Object State -eq 'PASS').Count
@@ -325,21 +292,20 @@ $ui.BtnCheck.Add_Click({
 
 $ui.BtnRepair.Add_Click({
   $inCall = $false
-  try { $inCall = [bool](@(& (Join-Path $dw 'mihomo-conns.ps1') | Where-Object { $_.proc -eq 'Discord.exe' -and $_.net -eq 'udp' -and $_.dst -match '^(104\.(28|29)\.|66\.22\.|195\.62\.89\.)' }).Count) } catch {}
+  try { $inCall = [bool](@(& (Join-Path $here 'mihomo-conns.ps1') | Where-Object { $_.proc -eq 'Discord.exe' -and $_.net -eq 'udp' -and $_.dst -match '^(104\.(28|29)\.|66\.22\.|195\.62\.89\.)' }).Count) } catch {}
   if ($inCall -and (Say 'أنت في مكالمة ديسكورد الآن. الإصلاح سيقطعها لثوانٍ. متابعة؟' 'Warning' 'YesNo') -ne 'Yes') { return }
-  Set-Busy $true 'جارٍ إعادة تشغيل الاتصال... (حوالي 30 ثانية)'; Clear-List 'إصلاح'; Add-Row 'RUN' 'إعادة تشغيل Clash Verge وإنشاء نفق WARP جديد'
-  Start-Bg $RepairWork @($cvExe) { param($res) Clear-List 'إصلاح'; Add-Row 'PASS' 'تمت إعادة التشغيل'; Set-Busy $false 'انتهى الإصلاح. يتم تحديث الحالة...'; Update-Status } })
+  Set-Busy $true 'جارٍ إعادة تشغيل الاتصال... (حوالي 15 ثانية)'; Clear-List 'إصلاح'; Add-Row 'RUN' 'إعادة تشغيل محرك الاتصال وإنشاء نفق WARP جديد'
+  Start-Bg $RepairWork @($cmdDir) { param($res) Clear-List 'إصلاح'; Add-Row 'PASS' 'تمت إعادة التشغيل'; Set-Busy $false 'انتهى الإصلاح. يتم تحديث الحالة...'; Update-Status } })
 
 function Test-PreviewBlock { if ($Preview) { Say 'هذه معاينة فقط: الإيقاف والتحديث والإزالة معطّلة هنا.' | Out-Null; return $true }; $false }
 $ui.BtnPause.Add_Click({
   if (Test-PreviewBlock) { return }
   $paused = Test-Path $pausedFlag
-  $q = if ($paused) { 'تشغيل مرور الديسكورد عبر WARP مرة ثانية؟ (سيطلب Windows صلاحية المسؤول)' } else { "إيقاف مؤقت: الديسكورد سيتوقف عن المرور عبر WARP (سيعود محجوباً) حتى تضغط ""تشغيل"".`nمفيد إذا أردت استخدام VPN آخر. يبقى الإيقاف حتى بعد إعادة تشغيل الكمبيوتر.`nسيطلب Windows صلاحية المسؤول. متابعة؟" }
+  $q = if ($paused) { 'تشغيل مرور الديسكورد عبر WARP مرة ثانية؟' } else { "إيقاف مؤقت: الديسكورد سيتوقف عن المرور عبر WARP (سيعود محجوباً) حتى تضغط ""تشغيل"".`nمفيد إذا أردت استخدام VPN آخر. يبقى الإيقاف حتى بعد إعادة تشغيل الكمبيوتر.`nمتابعة؟" }
   if ((Say $q 'Question' 'YesNo') -ne 'Yes') { return }
-  $act = if ($paused) { 'Resume' } else { 'Pause' }
-  try { Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Action $act" } catch { return }
-  Set-Busy $true $(if ($paused) { 'جارٍ التشغيل... (حوالي 30 ثانية)' } else { 'جارٍ الإيقاف...' })
-  $script:waitUntil = (Get-Date).AddSeconds($(if ($paused) { 35 } else { 8 }))
+  try { Send-EngineCommand $(if ($paused) { 'resume' } else { 'pause' }) } catch { Say "تعذّر إرسال الأمر لخدمة Discord WARP.`n$($_.Exception.Message)" 'Warning' | Out-Null; return }
+  Set-Busy $true $(if ($paused) { 'جارٍ التشغيل... (حوالي 15 ثانية)' } else { 'جارٍ الإيقاف...' })
+  $script:waitUntil = (Get-Date).AddSeconds($(if ($paused) { 15 } else { 6 }))
   $t = New-Object Windows.Threading.DispatcherTimer; $t.Interval = [TimeSpan]::FromSeconds(1)
   $t.Add_Tick({ if ((Get-Date) -ge $script:waitUntil) { $this.Stop(); Set-Busy $false ''; Update-Status } }); $t.Start() })
 $miPause.Add_Click({ Show-Main; $ui.BtnPause.RaiseEvent((New-Object Windows.RoutedEventArgs ([Windows.Controls.Primitives.ButtonBase]::ClickEvent))) })
@@ -347,15 +313,15 @@ $miRepair.Add_Click({ Show-Main; $ui.BtnRepair.RaiseEvent((New-Object Windows.Ro
 
 $ui.BtnReport.Add_Click({
   Set-Busy $true 'جارٍ تجهيز التقرير... (حوالي 20 ثانية)'
-  Start-Bg $ReportWork @($dw, $cvExe) { param($res) $zip = [string]($res | Select-Object -Last 1)
+  Start-Bg $ReportWork @($prog, $data) { param($res) $zip = [string]($res | Select-Object -Last 1)
     Set-Busy $false "تم حفظ التقرير على سطح المكتب: $zip"
     Say "تم حفظ التقرير على سطح المكتب:`n$zip`n`nأرسل هذا الملف لمن يساعدك. لا يحتوي على كلمات سر أو مفاتيح." | Out-Null
     Start-Process explorer.exe -ArgumentList "/select,`"$zip`"" } })
 
 # ---- updates: button, tray item, background check (60 s after start, then every 6 h), badge on the tray icon ----
 $script:updateInfo = $null; $script:updInteractive = $false
-$snoozeFile = Join-Path $dw 'update-snooze.txt'
-function Get-InstalledVersion { if (Test-Path "$dw\installed-version.txt") { (Get-Content "$dw\installed-version.txt" -Raw).Trim() } else { '0.0.0' } }
+$snoozeFile = Join-Path $userDir 'update-snooze.txt'
+function Get-InstalledVersion { $vf = Join-Path $data 'version.txt'; if (Test-Path $vf) { (Get-Content $vf -Raw).Trim() } else { '0.0.0' } }
 function Set-UpdateBadge {
   $has = [bool]$script:updateInfo
   $ui.BtnUpdate.Content = if ($has) { "تحديث متاح ($($script:updateInfo.tag))" } else { 'البحث عن تحديث' }
@@ -367,7 +333,7 @@ function Request-Update($r, [string]$cur, [bool]$inter) {
   if ($notes.Length -gt 400) { $notes = $notes.Substring(0, 400) + ' ...' }
   $a = Say ("يوجد تحديث جديد لأداة Discord WARP.`n`nالنسخة الجديدة: $($r.tag)`nنسختك الحالية: $cur`n`n$notes`n`nتحميل وتثبيت التحديث الآن؟ سيطلب Windows صلاحية المسؤول.") 'Question' 'YesNo' @('تحديث الآن', 'لاحقاً')
   if ($a -ne 'Yes') { if (-not $inter) { Set-Content -LiteralPath $snoozeFile -Value "$($r.tag)|$((Get-Date).AddDays(1).ToString('o'))" -Encoding ASCII }; return }
-  Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile -STA -ExecutionPolicy Bypass -File `"$dw\Update.ps1`" -Yes"
+  Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile -STA -ExecutionPolicy Bypass -File `"$here\Update.ps1`" -Yes"
   $script:quit = $true; $notify.Visible = $false; $win.Close(); [Windows.Application]::Current.Shutdown() }
 function Invoke-UpdateCheck([bool]$interactive) {
   if ($interactive -and (Test-PreviewBlock)) { return }
@@ -425,25 +391,29 @@ $ui.BtnDiscord.Add_Click({
 
 $ui.BtnUninstall.Add_Click({
   if (Test-PreviewBlock) { return }
-  $a = Say ("إزالة Discord WARP من هذا الكمبيوتر:`n`nحذف كل شيء: الإعدادات + برنامج Clash Verge وكل ملفاته + حساب WARP والسجلات.`nالإعدادات فقط: يبقى Clash Verge وحساب WARP (لإعادة التثبيت لاحقاً).`n`nبعد الإزالة يعود ديسكورد محجوباً كما كان.") 'Warning' 'YesNoCancel' @('حذف كل شيء', 'الإعدادات فقط', 'إلغاء')
+  $a = Say ("إزالة Discord WARP من هذا الكمبيوتر:`n`nحذف كل شيء: البرنامج ومحرك الاتصال وحساب WARP والسجلات.`nالإعدادات فقط: يبقى حساب WARP (لإعادة التثبيت لاحقاً).`n`nبعد الإزالة يعود ديسكورد محجوباً كما كان.") 'Warning' 'YesNoCancel' @('حذف كل شيء', 'الإعدادات فقط', 'إلغاء')
   if ($a -eq 'Cancel') { return }
   $mode = if ($a -eq 'Yes') { 'Full' } else { 'Settings' }
-  Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile -STA -ExecutionPolicy Bypass -File `"$dw\Uninstall.ps1`" -Mode $mode"
+  Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile -STA -ExecutionPolicy Bypass -File `"$here\Uninstall.ps1`" -Mode $mode"
   $script:quit = $true; $notify.Visible = $false; $win.Close(); [Windows.Application]::Current.Shutdown() })
 
 # ---- install (package mode) ----
 $steps = @(
-  @('فحص الجهاز وملفات الحزمة', 'package binaries: SHA-256 OK'), @('تثبيت Clash Verge', 'installing Clash Verge|Clash Verge already installed'),
-  @('تشغيل خدمة Clash Verge', '\d service: '), @('إنشاء حساب WARP مجاني لهذا الكمبيوتر', 'WARP profile parsed'),
-  @('ضبط الإعدادات وفحصها', 'Clash Verge: profile Discord-WARP written'), @('توجيه أسماء الديسكورد', 'NRPT: '),
-  @('التطبيق والتشغيل التلقائي والإصلاح الذاتي', 'autostart: '), @('الفحص النهائي', 'verify #'))
+  @('فحص الجهاز وملفات الحزمة', 'package files: SHA-256 OK'), @('إيقاف الإعداد القديم (إن وُجد)', 'old setup: '),
+  @('تثبيت البرنامج ومحرك الاتصال', 'program files installed'), @('حساب WARP مجاني لهذا الكمبيوتر', 'WARP profile parsed'),
+  @('ضبط الإعدادات وفحصها', 'engine config written'), @('تشغيل خدمة الاتصال', 'engine: running'), @('توجيه أسماء الديسكورد', 'NRPT: '),
+  @('الاختصارات والتشغيل التلقائي', 'shortcuts: '), @('الفحص النهائي', 'verify #'))
 $ui.BtnInstall.Add_Click({
   $q = "سيتم إعداد ديسكورد ليعمل عبر Cloudflare WARP على هذا الكمبيوتر (باقي البرامج لا تتأثر):`n" +
-       "• تثبيت Clash Verge`n• إنشاء حساب WARP مجاني لهذا الكمبيوتر`n• ضبط التشغيل التلقائي`n" +
+       "• تثبيت محرك الاتصال (mihomo الرسمي) كخدمة في الخلفية`n• إنشاء حساب WARP مجاني لهذا الكمبيوتر`n• ضبط التشغيل التلقائي`n" +
        "• إذا كان برنامج Cloudflare WARP الرسمي متصلاً سيتم فصله`n`nأطفئ أي VPN آخر قبل البدء. سيطلب Windows صلاحية المسؤول. متابعة؟"
   if (-not $script:skipConfirm -and (Say $q 'Question' 'YesNo') -ne 'Yes') { return }
+  $rmCv = ''   # v1.x used Clash Verge; v1.3 no longer needs it
+  if (Test-Path (Join-Path $env:ProgramFiles 'Clash Verge\clash-verge.exe')) {
+    $a = Say "برنامج Clash Verge موجود على هذا الكمبيوتر (كانت تستخدمه النسخ القديمة).`nالنسخة الجديدة لا تحتاجه، وسيتم إيقافه في كل الأحوال.`n`nهل تريد حذفه نهائياً؟ (اختر ""إبقاء"" إذا كنت تستخدمه لشيء آخر)" 'Question' 'YesNo' @('حذف Clash Verge', 'إبقاء')
+    if ($a -eq 'Yes') { $rmCv = ' -RemoveClashVerge' } }
   $script:instLog = Join-Path $env:TEMP "discord-warp-install-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
-  try { Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $here 'Install.ps1')`" -NoPopups -ProgressLog `"$script:instLog`"" }
+  try { Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $here 'Install.ps1')`" -NoPopups -ProgressLog `"$script:instLog`"$rmCv" }
   catch { Set-Busy $false 'تم إلغاء التثبيت (لم تتم الموافقة على صلاحية المسؤول).'; return }
   Set-Busy $true 'جارٍ التثبيت... لا تغلق النافذة (2 إلى 5 دقائق)'; $script:instStart = Get-Date
   $ui.StatusTitle.Text = 'جارٍ التثبيت...'; $ui.StatusSub.Text = ''
@@ -478,7 +448,7 @@ $ui.BtnInstall.Add_Click({
 # ---- start ----
 $refresh = New-Object Windows.Threading.DispatcherTimer; $refresh.Interval = [TimeSpan]::FromMinutes(3); $refresh.Add_Tick({ Update-Status }); $refresh.Start()
 $pump.Start()
-$firstRun = Join-Path $dw 'first-run.flag'
+$firstRun = Join-Path $userDir 'first-run.flag'
 if (-not $isPackage -and (Test-Path $firstRun)) {   # first start after (re)install: welcome + where to go next
   Remove-Item $firstRun -Force -ErrorAction SilentlyContinue; $Tray = $false
   Clear-List 'مرحباً! تم التثبيت'

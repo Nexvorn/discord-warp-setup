@@ -6,7 +6,6 @@
 param([string]$Repo = 'Nexvorn/discord-warp-setup', [switch]$CheckOnly, [switch]$Yes)   # -Yes: the app already asked the user
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
-$dw = Join-Path $env:USERPROFILE '.discord-warp'
 if (Test-Path (Join-Path $PSScriptRoot 'Dialog.ps1')) { . (Join-Path $PSScriptRoot 'Dialog.ps1') }
 function Say([string]$t, [string]$icon = 'Information', [string]$b = 'OK', [string[]]$labels = $null) {
   $__k = @{ Information = 'info'; Question = 'question'; Warning = 'warning'; Error = 'error'; Success = 'success' }[$icon]; if (-not $__k) { $__k = 'info' }
@@ -16,8 +15,8 @@ function Say([string]$t, [string]$icon = 'Information', [string]$b = 'OK', [stri
   [string][System.Windows.Forms.MessageBox]::Show($t, 'Discord WARP', $b, $icon, [System.Windows.Forms.MessageBoxDefaultButton]::Button1, [System.Windows.Forms.MessageBoxOptions]'RtlReading, RightAlign') }
 
 $cur = '0.0.0'
-$vf = Join-Path $dw 'installed-version.txt'
-if (Test-Path $vf) { $cur = (Get-Content $vf -Raw).Trim() }
+foreach ($vf in (Join-Path $env:ProgramData 'DiscordWARP\version.txt'), (Join-Path $env:USERPROFILE '.discord-warp\installed-version.txt')) {   # v1.3+, then v1.x
+  if (Test-Path $vf) { $cur = (Get-Content $vf -Raw).Trim(); break } }
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 try {
   $hdr = @{ 'User-Agent' = 'discord-warp-setup-updater'; 'Accept' = 'application/vnd.github+json' }

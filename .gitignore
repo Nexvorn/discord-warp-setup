@@ -8,3 +8,4 @@ cache/
 *wgcf-profile*
 *.toml
 secrets/
+app/bin/

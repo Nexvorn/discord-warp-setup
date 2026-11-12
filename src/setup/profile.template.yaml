@@ -35,7 +35,6 @@ rules:
   # 1) Discord desktop app: everything it sends (TCP+UDP, any destination that reaches the TUN)
   - PROCESS-PATH-REGEX,(?i)\\AppData\\Local\\Discord\\,DISCORD
   # 2) Discord domains from any app (Chrome/Edge discord.com/app, etc.)
-  - GEOSITE,discord,DISCORD
   - DOMAIN-SUFFIX,discord.com,DISCORD
   - DOMAIN-SUFFIX,discordapp.com,DISCORD
   - DOMAIN-SUFFIX,discordapp.net,DISCORD
@@ -60,7 +59,6 @@ dns:
   fake-ip-range6: fdfe:dcba:9876::1/64
   fake-ip-filter-mode: whitelist     # ONLY Discord names get fake-IPs; all other names get real answers
   fake-ip-filter:
-    - geosite:discord
     - +.discord.com
     - +.discordapp.com
     - +.discordapp.net

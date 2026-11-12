@@ -1,10 +1,10 @@
 # Lists every TCP/UDP socket owned by Discord processes and classifies it:
-#   TUNNEL = local address is the Clash TUN (198.18.0.1) -> goes through WARP
+#   TUNNEL = local address is the DiscordWARP TUN (198.18.0.1) -> goes through WARP
 #   LEAK   = bound to the physical NIC with a non-LAN remote -> bypasses the tunnel
 #   LOCAL  = loopback / LAN / unconnected listener
 $pids = @(Get-Process Discord -ErrorAction SilentlyContinue).Id
 if (-not $pids) { "Discord is not running"; return }
-$tun = (Get-NetIPAddress -InterfaceAlias Meta -AddressFamily IPv4 -ErrorAction SilentlyContinue).IPAddress
+$tun = (Get-NetIPAddress -InterfaceAlias DiscordWARP -AddressFamily IPv4 -ErrorAction SilentlyContinue).IPAddress
 function Classify($la, $ra) {
   if ($la -eq $tun) { return 'TUNNEL' }
   if ($ra -match '^(127\.|::1|0\.0\.0\.0|::$|\*|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.|fe80|$)') { return 'LOCAL' }
