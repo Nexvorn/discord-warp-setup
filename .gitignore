@@ -1,0 +1,10 @@
+# build output and downloaded third-party binaries (rebuild with build.ps1; the zip is published as a GitHub Release asset)
+dist/
+cache/
+*.exe
+*.zip
+# never commit WARP account files
+*wgcf-account*
+*wgcf-profile*
+*.toml
+secrets/
