@@ -247,8 +247,7 @@ function Show-Main { $win.Show(); if ($win.WindowState -eq 'Minimized') { $win.W
 $notify.Add_DoubleClick({ Show-Main }); $notify.Add_BalloonTipClicked({ Show-Main }); $miOpen.Add_Click({ Show-Main })
 $script:quit = $false
 $miExit.Add_Click({ $script:quit = $true; $notify.Visible = $false; $win.Close(); [Windows.Application]::Current.Shutdown() })
-$win.Add_Closing({ param($s, $e) if (-not $script:quit -and -not $isPackage) { $e.Cancel = $true; $win.Hide()
-  if (-not $script:hintShown) { $script:hintShown = $true; $notify.ShowBalloonTip(3000, 'Discord WARP', 'التطبيق ما زال يعمل هنا بجانب الساعة.', 'Info') } } })
+$win.Add_Closing({ param($s, $e) if (-not $script:quit -and -not $isPackage) { $e.Cancel = $true; $win.Hide() } })   # closing = back to the tray, silently (no notification)
 $win.Add_Closed({ $notify.Visible = $false; [Windows.Application]::Current.Shutdown() })
 
 # ---- status ----
@@ -261,7 +260,7 @@ function Apply-Status($r) {
   elseif ($r.paused) { $title = 'متوقف مؤقتاً'; $sub = 'الديسكورد لا يمر عبر WARP الآن. اضغط "تشغيل" للعودة.' }
   elseif (-not ($r.svc -and $r.core -and $r.meta)) { $state = 'red'; $title = 'محرك الاتصال لا يعمل'; $sub = 'اضغط "إصلاح".' }
   elseif (-not $r.nrpt) { $state = 'red'; $title = 'إعداد ناقص'; $sub = 'توجيه أسماء الديسكورد مفقود. أعد التثبيت.' }
-  elseif (-not $r.delay) { $state = 'red'; $title = 'نفق WARP لا يستجيب'; $sub = 'اضغط "إصلاح". إذا استمرت المشكلة اضغط "تقرير للمساعدة".' }
+  elseif (-not $r.delay) { $state = 'red'; $title = 'نفق WARP لا يستجيب'; $sub = 'يتم الإصلاح تلقائياً خلال دقيقة. إذا استمر أكثر من دقيقتين اضغط "إصلاح".' }
   elseif ($r.delay -gt 300) { $state = 'orange'; $title = 'الاتصال بطيء'; $sub = "السرعة: $($r.delay) ms. جرّب ""إصلاح"" إذا كان الديسكورد بطيئاً." }
   else { $state = 'green'; $title = 'الديسكورد يعمل عبر WARP'; $sub = "السرعة: $($r.delay) ms  |  آخر فحص: $(Get-Date -Format 'HH:mm')" }
   $ui.Dot.Fill = New-Brush $colors[$state]; $ui.StatusTitle.Text = $title; $ui.StatusSub.Text = $sub
@@ -276,7 +275,9 @@ function Apply-Status($r) {
   $ui.BtnPause.Content = if ($paused) { 'تشغيل' } else { 'إيقاف مؤقت' }; $miPause.Text = $ui.BtnPause.Content
   foreach ($b in 'BtnCheck','BtnRepair') { $ui[$b].IsEnabled = $installed -and -not $paused }
   Update-DiscordButtons
-  if ($script:lastState -in 'green','orange' -and $state -eq 'red') { $notify.ShowBalloonTip(5000, 'Discord WARP', "$title - افتح التطبيق واضغط ""إصلاح"".", 'Warning') }
+  # notify only if the problem outlasts the engine's own self-heal (red at two status refreshes in a row, about 3 min apart)
+  $script:redCount = if ($state -eq 'red') { [int]$script:redCount + 1 } else { 0 }
+  if ($script:redCount -eq 2) { $notify.ShowBalloonTip(5000, 'Discord WARP', "$title - افتح التطبيق واضغط ""إصلاح"".", 'Warning') }
   $script:lastState = $state
 }
 function Update-Status { Start-Bg $StatusWork @($prog, $data) { param($res) Apply-Status ($res | Select-Object -Last 1) } }

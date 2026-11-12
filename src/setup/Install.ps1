@@ -161,19 +161,22 @@ if (-not $n.Count) { Fail 'تعذّر ضبط توجيه أسماء الديسك�
 Log "NRPT: $(@($n[0].Namespace).Count) Discord namespaces -> $($n[0].NameServers)"
 
 # ---------- 7. app, shortcuts, tray at logon, Apps entry, v1.x leftovers ----------
+# launched through "conhost.exe --headless": with Windows Terminal as the default console, "powershell -WindowStyle Hidden"
+# still opened an empty PowerShell window at logon (2026-11-13). conhost --headless creates no console window at all.
 $psExe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"; $ico = Join-Path $prog 'app.ico'
-$appArgs = "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scripts\App.ps1`""
+$hostExe = "$env:SystemRoot\System32\conhost.exe"; $hostPre = "--headless `"$psExe`""
+$appArgs = "$hostPre -NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scripts\App.ps1`""
 $sm = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Discord WARP'; New-Item -ItemType Directory -Force $sm | Out-Null
 Get-ChildItem $sm -Filter *.lnk | Remove-Item -Force
 $ws = New-Object -ComObject WScript.Shell
 foreach ($lp in (Join-Path $sm 'Discord WARP.lnk'), (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Discord WARP.lnk')) {
-  $l = $ws.CreateShortcut($lp); $l.TargetPath = $psExe; $l.Arguments = $appArgs; $l.IconLocation = "$ico,0"; $l.Description = 'Discord WARP'; $l.Save() }
-$l = $ws.CreateShortcut((Join-Path $sm 'Discord WARP - Uninstall.lnk')); $l.TargetPath = $psExe
-$l.Arguments = "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scripts\Uninstall.ps1`""; $l.IconLocation = "$ico,0"; $l.Save()
-Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Discord WARP Tray' -Value "`"$psExe`" $appArgs -Tray"
+  $l = $ws.CreateShortcut($lp); $l.TargetPath = $hostExe; $l.Arguments = $appArgs; $l.IconLocation = "$ico,0"; $l.Description = 'Discord WARP'; $l.Save() }
+$l = $ws.CreateShortcut((Join-Path $sm 'Discord WARP - Uninstall.lnk')); $l.TargetPath = $hostExe
+$l.Arguments = "$hostPre -NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scripts\Uninstall.ps1`""; $l.IconLocation = "$ico,0"; $l.Save()
+Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Discord WARP Tray' -Value "`"$hostExe`" $appArgs -Tray"
 $ak = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DiscordWARP'; New-Item -Path $ak -Force | Out-Null
 $props = [ordered]@{ DisplayName = 'Discord WARP'; DisplayVersion = $ver; Publisher = 'discord-warp-setup'; InstallLocation = $prog; DisplayIcon = $ico
-  UninstallString = "$psExe -NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scripts\Uninstall.ps1`""; URLInfoAbout = 'https://github.com/Nexvorn/discord-warp-setup' }
+  UninstallString = "`"$hostExe`" $hostPre -NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scripts\Uninstall.ps1`""; URLInfoAbout = 'https://github.com/Nexvorn/discord-warp-setup' }
 foreach ($k in $props.Keys) { Set-ItemProperty -Path $ak -Name $k -Value $props[$k] }
 Set-ItemProperty -Path $ak -Name NoModify -Value 1 -Type DWord; Set-ItemProperty -Path $ak -Name NoRepair -Value 1 -Type DWord
 Set-Content -LiteralPath (Join-Path $userDir 'first-run.flag') -Value $ver -Encoding ASCII

@@ -1,8 +1,11 @@
 # Discord WARP v1.3 - engine supervisor. Runs as SYSTEM from the scheduled task "DiscordWARP-Engine" (at startup).
 # - starts mihomo (%ProgramFiles%\DiscordWARP\mihomo.exe) with %ProgramData%\DiscordWARP\engine\config.yaml, restarts it if it exits
 # - keeps the NRPT rule (Discord names -> 198.18.0.2) while running, removes it while paused
-# - self-heal: every 2 min 4 delay tests to the Discord API through WARP; 3 failed rounds in a row and no active
-#   Discord call -> recreate the tunnel (restart mihomo), at most 3 times per hour
+# - at boot: waits until Windows reports internet on a real network adapter before starting the engine (a tunnel
+#   created while the network is still being identified stayed dead after a reboot, 2026-11-13)
+# - self-heal: 20 s after every start, then every 60 s: 4 delay tests to the Discord API through WARP; after a failed
+#   round re-check every 30 s; 3 failed rounds in a row (2 within 3 min of a start) and no active Discord call
+#   -> recreate the tunnel (restart mihomo), at most 4 times per hour
 # - commands from the app (no admin needed): files in %ProgramData%\DiscordWARP\cmd  ->  restart | pause | resume
 # Never runs two engines with the same WARP key. ASCII only.
 $ErrorActionPreference = 'Continue'
@@ -55,15 +58,25 @@ function Start-Engine {
   $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true; $psi.WorkingDirectory = $engDir
   $script:proc = [Diagnostics.Process]::Start($psi)   # cmd.exe waits for mihomo, so HasExited = engine exited
   Start-Sleep 2
+  $script:startedAt = Get-Date; $script:nextCheck = (Get-Date).AddSeconds(20); $script:failed = 0   # verify the new tunnel soon
   L "engine started (mihomo pid $((Get-Process mihomo -ErrorAction SilentlyContinue | Select-Object -First 1).Id))" }
 function Stop-Engine([string]$why) {
   if ($script:proc -and -not $script:proc.HasExited) { try { $script:proc.Kill(); [void]$script:proc.WaitForExit(5000) } catch {}; L "engine stopped ($why)" }
   Get-Process mihomo -ErrorAction SilentlyContinue | Stop-Process -Force
   $script:proc = $null }
 
+function Wait-Network([int]$maxSec = 120) {
+  $t0 = Get-Date
+  while (((Get-Date) - $t0).TotalSeconds -lt $maxSec) {
+    $p = @(Get-NetConnectionProfile -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceAlias -ne 'DiscordWARP' -and ($_.IPv4Connectivity -eq 'Internet' -or $_.IPv6Connectivity -eq 'Internet') })
+    $r = Get-NetRoute -DestinationPrefix 0.0.0.0/0 -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceAlias -ne 'DiscordWARP' -and $_.NextHop -ne '0.0.0.0' }
+    if ($p.Count -and $r) { L "network ready after $([int]((Get-Date) - $t0).TotalSeconds) s ($($p[0].InterfaceAlias))"; Start-Sleep 3; return }
+    Start-Sleep 2 }
+  L "network not reported ready after $maxSec s - starting anyway" }
+
 L "=== supervisor start (version $(try { (Get-Content (Join-Path $data 'version.txt') -Raw).Trim() } catch { '?' }))"
-if (Test-Path $paused) { L 'paused by the user - engine not started'; Set-Nrpt $false } else { Set-Nrpt $true; Start-Engine }
-$nextCheck = (Get-Date).AddMinutes(2); $failed = 0; $restarts = 0; $hour = Get-Date; $crash = 0; $lastCrash = [datetime]::MinValue
+$nextCheck = (Get-Date).AddMinutes(2); $failed = 0; $startedAt = Get-Date; $restarts = 0; $hour = Get-Date; $crash = 0; $lastCrash = [datetime]::MinValue
+if (Test-Path $paused) { L 'paused by the user - engine not started'; Set-Nrpt $false } else { Wait-Network; Set-Nrpt $true; Start-Engine }
 
 while ($true) {
   Start-Sleep -Seconds 2
@@ -81,19 +94,21 @@ while ($true) {
     $code = try { $script:proc.ExitCode } catch { -1 }
     $crash = if (((Get-Date) - $lastCrash).TotalMinutes -lt 10) { $crash + 1 } else { 1 }; $lastCrash = Get-Date
     $wait = [Math]::Min(60, 5 * $crash); L "engine not running (exit $code) - restart in $wait s"
-    Start-Sleep $wait; $script:proc = $null; Set-Nrpt $true; Start-Engine; $nextCheck = (Get-Date).AddMinutes(2); continue }
+    Start-Sleep $wait; $script:proc = $null; Set-Nrpt $true; Start-Engine; continue }
   # ---- self-heal ----
   if ((Get-Date) -lt $nextCheck) { continue }
-  $nextCheck = (Get-Date).AddMinutes(2)
+  $nextCheck = (Get-Date).AddSeconds(60)
   $res = @(); $good = 0
   1..4 | ForEach-Object { $d = Get-DiscordDelay; $res += $(if ($d -lt 0) { 'fail' } else { $d }); if ($d -ge 0 -and $d -lt 300) { $good++ }; Start-Sleep 2 }
   if ($good -ge 3) { if ($failed) { L "check OK again: $($res -join ',')" }; $failed = 0; continue }
-  $failed++; L "check round failed ($failed/3): $($res -join ',')"
-  if ($failed -lt 3) { continue }
+  $need = if (((Get-Date) - $startedAt).TotalMinutes -lt 3) { 2 } else { 3 }   # a fresh tunnel that does not work is recreated sooner
+  $failed++; L "check round failed ($failed/$need): $($res -join ',')"
+  $nextCheck = (Get-Date).AddSeconds(30)
+  if ($failed -lt $need) { continue }
   $failed = 0
   if (((Get-Date) - $hour).TotalHours -ge 1) { $hour = Get-Date; $restarts = 0 }
-  if ($restarts -ge 3) { L 'self-heal: limit of 3 restarts per hour reached - waiting'; continue }
+  if ($restarts -ge 4) { L 'self-heal: limit of 4 restarts per hour reached - waiting'; continue }
   if (Test-InCall) { L 'self-heal: Discord call active - not restarting'; continue }
-  $restarts++; L "self-heal: recreating the WARP tunnel (restart $restarts/3 this hour)"
+  $restarts++; L "self-heal: recreating the WARP tunnel (restart $restarts/4 this hour)"
   Stop-Engine 'self-heal'; Start-Sleep 1; Start-Engine
 }
