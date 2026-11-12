@@ -365,7 +365,7 @@ $ui.BtnInstall.Add_Click({
        "• إذا كان برنامج Cloudflare WARP الرسمي متصلاً سيتم فصله`n`nأطفئ أي VPN آخر قبل البدء. سيطلب Windows صلاحية المسؤول. متابعة؟"
   if (-not $script:skipConfirm -and (Say $q 'Question' 'YesNo') -ne 'Yes') { return }
   $script:instLog = Join-Path $env:TEMP "discord-warp-install-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
-  try { Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $here 'Install.ps1')`" -NoPopups -LogFile `"$script:instLog`"" }
+  try { Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $here 'Install.ps1')`" -NoPopups -ProgressLog `"$script:instLog`"" }
   catch { Set-Busy $false 'تم إلغاء التثبيت (لم تتم الموافقة على صلاحية المسؤول).'; return }
   Set-Busy $true 'جارٍ التثبيت... لا تغلق النافذة (2 إلى 5 دقائق)'; $script:instStart = Get-Date
   $ui.StatusTitle.Text = 'جارٍ التثبيت...'; $ui.StatusSub.Text = ''

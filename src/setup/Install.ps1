@@ -4,7 +4,8 @@
 # Run through Install-DiscordWARP.cmd (asks for admin). Safe to re-run: reuses the existing WARP account on this PC.
 # Never prints secrets. Log: %USERPROFILE%\.discord-warp\install-<stamp>.log
 # NOTE: this file contains Arabic UI text - it must be saved as UTF-8 WITH BOM for Windows PowerShell 5.1 (build.ps1 does that).
-param([switch]$NoPopups, [string]$LogFile = '')   # -NoPopups + -LogFile: driven by the app (App.ps1 shows the progress)
+param([switch]$NoPopups, [string]$ProgressLog = '')   # -NoPopups + -ProgressLog: driven by the app (App.ps1 shows the progress)
+# NOTE: PowerShell variable names are case-insensitive - this param must not be called LogFile ($logFile below is the main log).
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\DiscordWarpLib.ps1"
 Add-Type -AssemblyName System.Windows.Forms
@@ -20,7 +21,7 @@ $mihomo = Join-Path $cvHome 'verge-mihomo.exe'
 $res    = Join-Path $cvHome 'resources'
 New-Item -ItemType Directory -Force $dw | Out-Null
 $logFile = Join-Path $dw "install-$stamp.log"
-$appLog = $LogFile   # extra copy of every log line for the app's progress view
+$appLog = $ProgressLog   # extra copy of every log line for the app's progress view
 
 function Log([string]$m) { $l = "$(Get-Date -Format 'HH:mm:ss') $m"; Write-Host $l; Add-Content -LiteralPath $logFile -Value $l -Encoding UTF8
   if ($appLog) { Add-Content -LiteralPath $appLog -Value $l -Encoding UTF8 } }
