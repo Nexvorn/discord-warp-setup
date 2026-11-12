@@ -363,7 +363,8 @@ function Set-UpdateBadge {
   $miUpdate.Text = if ($has) { "تحديث متاح: $($script:updateInfo.tag)" } else { 'البحث عن تحديثات' }
   if ($script:lastState) { $notify.Icon = $icons["$($script:lastState)$(if ($has) { '+u' })"] } }
 function Request-Update($r, [string]$cur, [bool]$inter) {
-  $notes = [string]$r.body; if ($notes.Length -gt 400) { $notes = $notes.Substring(0, 400) + ' ...' }
+  $notes = ((([string]$r.body) -split "\r?\n") | Where-Object { $_ -match '[\u0600-\u06FF]' }) -join "`n"   # Arabic lines of the release notes only (English text breaks in RTL)
+  if ($notes.Length -gt 400) { $notes = $notes.Substring(0, 400) + ' ...' }
   $a = Say ("يوجد تحديث جديد لأداة Discord WARP.`n`nالنسخة الجديدة: $($r.tag)`nنسختك الحالية: $cur`n`n$notes`n`nتحميل وتثبيت التحديث الآن؟ سيطلب Windows صلاحية المسؤول.") 'Question' 'YesNo' @('تحديث الآن', 'لاحقاً')
   if ($a -ne 'Yes') { if (-not $inter) { Set-Content -LiteralPath $snoozeFile -Value "$($r.tag)|$((Get-Date).AddDays(1).ToString('o'))" -Encoding ASCII }; return }
   Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile -STA -ExecutionPolicy Bypass -File `"$dw\Update.ps1`" -Yes"

@@ -30,7 +30,8 @@ $latest = ($rel.tag_name -replace '^v', '').Trim()
 if ([version]$latest -le [version]$cur) { Say "لديك آخر نسخة ($cur). لا يوجد تحديث." | Out-Null; exit 0 }
 if ($CheckOnly) { "update available: $cur -> $latest"; exit 0 }
 
-$notes = [string]$rel.body; if ($notes.Length -gt 500) { $notes = $notes.Substring(0, 500) + ' ...' }
+$notes = ((([string]$rel.body) -split "\r?\n") | Where-Object { $_ -match '[\u0600-\u06FF]' }) -join "`n"   # Arabic lines of the release notes only (English text breaks in RTL)
+  if ($notes.Length -gt 400) { $notes = $notes.Substring(0, 400) + ' ...' }
 if (-not $Yes) {
   $a = Say ("توجد نسخة جديدة: $latest (نسختك: $cur)`n`n$notes`n`nهل تريد التحديث الآن؟ سيطلب Windows صلاحية المسؤول.") 'Question' 'YesNo'
   if ($a -ne 'Yes') { exit 0 } }
