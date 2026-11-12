@@ -1,38 +1,78 @@
-# DiscordWARP-Setup - remove the Discord-via-WARP setup from this PC (run via Uninstall-DiscordWARP.cmd, admin).
-# Removes: NRPT rules, self-heal task, autostart, TUN; optionally the Clash Verge program + service.
-# Keeps %USERPROFILE%\.discord-warp (contains this PC's WARP account + logs) - delete it by hand if not needed.
+# DiscordWARP-Setup uninstaller (self-contained; started from the package, the Start menu or Windows "Apps").
+# Modes:  Full     = remove EVERYTHING: our settings, Clash Verge (service + program + all its data), the WARP account
+#                    folder %USERPROFILE%\.discord-warp (logs, backups), Start menu + Apps entries.
+#         Settings = remove our settings only (task, autostart, NRPT, TUN off, shortcuts); keep Clash Verge and the
+#                    WARP account (a later re-install reuses it).
+# -DryRun lists what would be removed and changes nothing (no admin needed).
+# Asks for admin itself and runs from a TEMP copy so it can delete its own folder.
 # NOTE: contains Arabic UI text - saved as UTF-8 WITH BOM by build.ps1.
+param([ValidateSet('', 'Full', 'Settings')][string]$Mode = '', [switch]$DryRun, [switch]$Relaunched)
 $ErrorActionPreference = 'Continue'
-. "$PSScriptRoot\DiscordWarpLib.ps1"
 Add-Type -AssemblyName System.Windows.Forms
-$dw = Join-Path $env:USERPROFILE '.discord-warp'; New-Item -ItemType Directory -Force $dw | Out-Null
-$logFile = Join-Path $dw "uninstall-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
-$cvDir = Join-Path $env:APPDATA 'io.github.clash-verge-rev.clash-verge-rev'
+$dw     = Join-Path $env:USERPROFILE '.discord-warp'
 $cvHome = Join-Path $env:ProgramFiles 'Clash Verge'
+$cvData = @((Join-Path $env:APPDATA 'io.github.clash-verge-rev.clash-verge-rev'), (Join-Path $env:LOCALAPPDATA 'io.github.clash-verge-rev.clash-verge-rev'),
+            (Join-Path $env:ProgramData 'clash-verge-service'), $cvHome)
+$startMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Discord WARP'
+$appsKey   = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DiscordWARP'
+function Say([string]$t, [string]$icon = 'Information', [string]$b = 'OK') {
+  if ($DryRun) { return 'OK' }
+  [string][System.Windows.Forms.MessageBox]::Show($t, 'Discord WARP', $b, $icon, [System.Windows.Forms.MessageBoxDefaultButton]::Button2, [System.Windows.Forms.MessageBoxOptions]'RtlReading, RightAlign') }
+$logFile = Join-Path $env:TEMP "discord-warp-uninstall-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
 function Log([string]$m) { $l = "$(Get-Date -Format 'HH:mm:ss') $m"; Write-Host $l; Add-Content -LiteralPath $logFile -Value $l -Encoding UTF8 }
-function Say([string]$t, [string]$icon = 'Information', [string]$b = 'OK') { [string][System.Windows.Forms.MessageBox]::Show($t, 'Discord WARP', $b, $icon, [System.Windows.Forms.MessageBoxDefaultButton]::Button2, [System.Windows.Forms.MessageBoxOptions]'RtlReading, RightAlign') }
+function Act([string]$what, [scriptblock]$do) { if ($DryRun) { Log "[dry-run] would $what" } else { try { & $do; Log "done: $what" } catch { Log "FAILED: $what - $($_.Exception.Message)" } } }
 
-$a = Say ("إزالة إعداد ديسكورد عبر WARP من هذا الكمبيوتر.`n`n" +
-  "نعم (Yes): إزالة الإعداد وحذف برنامج Clash Verge أيضاً.`n" +
-  "لا (No): إزالة الإعداد فقط مع إبقاء البرنامج.`n" +
-  "إلغاء (Cancel): عدم تغيير أي شيء.`n`n" +
-  "بعد الإزالة سيعود ديسكورد محجوباً كما كان.") 'Warning' 'YesNoCancel'
-if ($a -eq 'Cancel') { Log 'cancelled'; exit 2 }
-
-Unregister-ScheduledTask -TaskName 'DiscordWARP-SelfHeal' -Confirm:$false -ErrorAction SilentlyContinue; Log 'task DiscordWARP-SelfHeal removed'
-Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Clash Verge' -ErrorAction SilentlyContinue; Log 'autostart value removed'
-Get-DnsClientNrptRule | Where-Object Comment -eq 'DiscordWARP' | ForEach-Object { Remove-DnsClientNrptRule -Name $_.Name -Force }
-Clear-DnsClientCache; Log 'NRPT DiscordWARP rules removed'
-Remove-Item (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Discord WARP') -Recurse -Force -ErrorAction SilentlyContinue; Log 'Start menu shortcuts removed'
-Get-Process clash-verge -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 2
-$vy = Join-Path $cvDir 'verge.yaml'
-if (Test-Path $vy) { Write-Utf8NoBom $vy (Set-YamlTopKeys (Read-TextNoBom $vy) ([ordered]@{ enable_tun_mode = 'false'; enable_auto_launch = 'false'; enable_silent_start = 'false' })); Log 'Clash Verge: TUN and autostart switched off' }
-if ($a -eq 'Yes') {
-  $su = Join-Path $cvHome 'resources\clash-verge-service-uninstall.exe'
-  if (Test-Path $su) { Start-Process $su -Wait; Log 'clash_verge_service uninstalled' }
-  Get-Process verge-mihomo -ErrorAction SilentlyContinue | Stop-Process -Force
-  $un = Join-Path $cvHome 'uninstall.exe'
-  if (Test-Path $un) { Start-Process $un -ArgumentList '/S' -Wait; Log 'Clash Verge uninstalled' }
+# 1. ask (before elevation, so the question appears once)
+if (-not $Mode) {
+  if ($DryRun) { $Mode = 'Full' } else {
+    $a = Say ("إزالة ديسكورد عبر WARP من هذا الكمبيوتر:`n`n" +
+      "نعم (Yes) = حذف نهائي لكل شيء: الإعدادات + برنامج Clash Verge وكل ملفاته + حساب WARP والسجلات.`n" +
+      "لا (No) = حذف الإعدادات فقط، مع إبقاء Clash Verge وحساب WARP (لإعادة التثبيت لاحقاً).`n" +
+      "إلغاء (Cancel) = لا تغيّر شيئاً.`n`n" +
+      "تنبيه: إذا كنت تستخدم Clash Verge لأشياء أخرى، اختر (لا).`nبعد الإزالة يعود ديسكورد محجوباً كما كان.") 'Warning' 'YesNoCancel'
+    if ($a -eq 'Cancel') { exit 2 }
+    $Mode = if ($a -eq 'Yes') { 'Full' } else { 'Settings' }
+  }
 }
-Log 'done'
-Say ("تمت الإزالة.`n`nملف حساب WARP الخاص بهذا الكمبيوتر بقي في:`n$dw`nيمكنك حذفه يدوياً إذا لا تحتاجه.") | Out-Null
+
+# 2. elevate + run from a TEMP copy (the Full mode deletes the folder this script may live in)
+$isAdmin = (New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $DryRun -and (-not $isAdmin -or -not $Relaunched)) {
+  $copy = Join-Path $env:TEMP 'discord-warp-uninstall.ps1'
+  Copy-Item -LiteralPath $PSCommandPath $copy -Force
+  Start-Process powershell.exe -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$copy`" -Mode $Mode -Relaunched"
+  exit 0
+}
+Log "=== DiscordWARP uninstall, mode=$Mode, dry-run=$DryRun, user=$env:USERNAME ==="
+
+# 3. our settings (both modes)
+Act 'remove scheduled task DiscordWARP-SelfHeal' { Unregister-ScheduledTask -TaskName 'DiscordWARP-SelfHeal' -Confirm:$false -ErrorAction Stop }
+Act 'remove autostart value HKCU Run "Clash Verge"' { Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Clash Verge' -ErrorAction Stop }
+Act "remove NRPT rules DiscordWARP ($(@(Get-DnsClientNrptRule | Where-Object Comment -eq 'DiscordWARP').Count))" {
+  Get-DnsClientNrptRule | Where-Object Comment -eq 'DiscordWARP' | ForEach-Object { Remove-DnsClientNrptRule -Name $_.Name -Force }; Clear-DnsClientCache }
+Act "remove Start menu folder $startMenu" { if (Test-Path $startMenu) { Remove-Item $startMenu -Recurse -Force } }
+Act "remove Apps entry $appsKey" { if (Test-Path $appsKey) { Remove-Item $appsKey -Force } }
+Act 'stop Clash Verge GUI' { Get-Process clash-verge -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 2 }
+
+if ($Mode -eq 'Settings') {
+  $vy = Join-Path $cvData[0] 'verge.yaml'
+  Act 'Clash Verge: TUN + autostart off (verge.yaml)' {
+    if (Test-Path $vy) {
+      $t = [IO.File]::ReadAllText($vy)
+      foreach ($k in 'enable_tun_mode', 'enable_auto_launch', 'enable_silent_start') { $t = [regex]::Replace($t, "(?m)^${k}:.*$", "${k}: false") }
+      [IO.File]::WriteAllText($vy, $t, (New-Object Text.UTF8Encoding($false))) } }
+} else {
+  # 4. Full: Clash Verge service + program + data, then our folder
+  $su = Join-Path $cvHome 'resources\clash-verge-service-uninstall.exe'
+  Act 'uninstall service clash_verge_service' { if (Test-Path $su) { Start-Process $su -Wait } elseif (Get-Service clash_verge_service -ErrorAction SilentlyContinue) { Stop-Service clash_verge_service -Force; & sc.exe delete clash_verge_service | Out-Null } }
+  Act 'stop mihomo core' { Get-Process verge-mihomo, verge-mihomo-alpha -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 2 }
+  $un = Join-Path $cvHome 'uninstall.exe'
+  Act 'uninstall Clash Verge program (silent)' { if (Test-Path $un) { Start-Process $un -ArgumentList '/S' -Wait; Start-Sleep 3 } }
+  foreach ($d in $cvData) { $dd = $d; Act "delete folder $dd" { if (Test-Path $dd) { Remove-Item $dd -Recurse -Force } } }
+  Act "delete folder $dw (WARP account, logs, backups)" { if (Test-Path $dw) { Remove-Item $dw -Recurse -Force } }
+}
+Log '=== done ==='
+if (-not $DryRun) {
+  if ($Mode -eq 'Full') { Say "تم الحذف النهائي لكل شيء.`nسجل العملية: $logFile" | Out-Null }
+  else { Say "تمت إزالة الإعدادات.`nبقي برنامج Clash Verge وحساب WARP في:`n$dw`nسجل العملية: $logFile" | Out-Null }
+}

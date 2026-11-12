@@ -1,12 +1,8 @@
 @echo off
-rem Remove the Discord-via-WARP setup from this PC.
-setlocal
+rem Remove the Discord-via-WARP setup (asks: full removal of everything, or settings only). Asks for admin itself.
 title Discord WARP Uninstall
-fltmc >nul 2>&1 || (
-  powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
-  exit /b
+if exist "%USERPROFILE%\.discord-warp\Uninstall.ps1" (
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%USERPROFILE%\.discord-warp\Uninstall.ps1"
+) else (
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup\Uninstall.ps1"
 )
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup\Uninstall.ps1"
-echo.
-echo Finished. Press any key to close this window.
-pause >nul

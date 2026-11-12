@@ -207,7 +207,20 @@ $lnk = $ws.CreateShortcut((Join-Path $sm 'Discord WARP - Update.lnk'))
 $lnk.TargetPath = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
 $lnk.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$dw\Update.ps1`""
 $lnk.Save()
-Log "version $ver; updater + Start menu shortcuts (Check / Update) in $sm"
+Copy-Item (Join-Path $PSScriptRoot 'Uninstall.ps1') $dw -Force
+$lnk = $ws.CreateShortcut((Join-Path $sm 'Discord WARP - Uninstall.lnk'))
+$lnk.TargetPath = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+$lnk.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$dw\Uninstall.ps1`""
+$lnk.Save()
+# Windows Settings -> Apps -> "Discord WARP" -> Uninstall (per-user entry)
+$ak = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DiscordWARP'
+New-Item -Path $ak -Force | Out-Null
+$props = [ordered]@{ DisplayName = 'Discord WARP'; DisplayVersion = $ver; Publisher = 'discord-warp-setup'; InstallLocation = $dw
+  DisplayIcon = $cvExe; UninstallString = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$dw\Uninstall.ps1`""
+  URLInfoAbout = 'https://github.com/Nexvorn/discord-warp-setup' }
+foreach ($k in $props.Keys) { Set-ItemProperty -Path $ak -Name $k -Value $props[$k] }
+Set-ItemProperty -Path $ak -Name NoModify -Value 1 -Type DWord; Set-ItemProperty -Path $ak -Name NoRepair -Value 1 -Type DWord
+Log "version $ver; updater + uninstaller + Start menu shortcuts (Check / Update / Uninstall) in $sm; Apps entry 'Discord WARP'"
 
 # ---------- 8. autostart + self-heal task ----------
 Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Clash Verge' -Value "`"$cvExe`""
