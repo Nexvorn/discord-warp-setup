@@ -94,9 +94,10 @@ $ReportWork = {
   $zip
 }
 $UpdateCheckWork = {
-  param($repo)
+  param($repo, $token)
   [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-  try { $rel = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -TimeoutSec 20 -Headers @{ 'User-Agent' = 'discord-warp-app' }
+  $h = @{ 'User-Agent' = 'discord-warp-app' }; if ($token) { $h['Authorization'] = "Bearer $token" }   # token: only for testing a private repo (env DWARP_GH_TOKEN)
+  try { $rel = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -TimeoutSec 20 -Headers $h
         @{ ok = $true; tag = ($rel.tag_name -replace '^v', ''); body = [string]$rel.body } } catch { @{ ok = $false; err = $_.Exception.Message } }
 }
 
@@ -189,17 +190,13 @@ try { Add-Type -Namespace DW -Name Shell -MemberDefinition '[DllImport("shell32.
       <Button x:Name="BtnInstall" Content="تثبيت" Height="56" FontSize="17" FontWeight="SemiBold" Background="#5865F2" BorderBrush="#5865F2" Visibility="Collapsed"/>
       <StackPanel x:Name="Actions">
         <TextBlock Text="الديسكورد" Foreground="#80848E" FontSize="12" Margin="7,0,0,0"/>
-        <UniformGrid Rows="1" Columns="3">
-          <Button x:Name="BtnOpenDiscord" Content="فتح الديسكورد"/>
-          <Button x:Name="BtnGetDiscord" Content="تحميل وتثبيت الديسكورد"/>
-          <Button x:Name="BtnWebDiscord" Content="الديسكورد من المتصفح"/>
-        </UniformGrid>
+        <Button x:Name="BtnDiscord" Content="فتح الديسكورد" Height="50" FontSize="15" FontWeight="SemiBold"/>
         <TextBlock Text="الصيانة" Foreground="#80848E" FontSize="12" Margin="7,8,0,0"/>
         <UniformGrid Rows="2" Columns="3">
           <Button x:Name="BtnCheck" Content="فحص شامل"/>
           <Button x:Name="BtnRepair" Content="إصلاح"/>
           <Button x:Name="BtnPause" Content="إيقاف مؤقت"/>
-          <Button x:Name="BtnUpdate" Content="تحديث"/>
+          <Button x:Name="BtnUpdate" Content="البحث عن تحديث"/>
           <Button x:Name="BtnReport" Content="تقرير للمساعدة"/>
           <Button x:Name="BtnUninstall" Content="إزالة"/>
         </UniformGrid>
@@ -219,29 +216,36 @@ try { Add-Type -Namespace DW -Name Shell -MemberDefinition '[DllImport("shell32.
 </Window>
 '@
 $win = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $xaml))
-$uiNames = 'Ver','Dot','StatusTitle','StatusSub','BtnInstall','Actions','BtnCheck','BtnRepair','BtnPause','BtnUpdate','BtnReport','BtnUninstall','ListTitle','ListPanel','Busy','Foot','BtnOpenDiscord','BtnGetDiscord','BtnWebDiscord'
+$uiNames = 'Ver','Dot','StatusTitle','StatusSub','BtnInstall','Actions','BtnCheck','BtnRepair','BtnPause','BtnUpdate','BtnReport','BtnUninstall','ListTitle','ListPanel','Busy','Foot','BtnDiscord'
 $ui = @{}; foreach ($n in $uiNames) { $ui[$n] = $win.FindName($n) }
 $ui.Ver.Text = "الإصدار $appVersion" + $(if ($Preview) { '  (معاينة)' } else { '' })
 if ($SelfTest) { "ui controls found: $(@($ui.Values | Where-Object { $_ }).Count)/$($uiNames.Count)"; exit 0 }
 
 $colors = @{ green = '#23A55A'; red = '#F23F43'; orange = '#F0B232'; grey = '#80848E' }
 function New-Brush($hex) { New-Object Windows.Media.SolidColorBrush ([Windows.Media.ColorConverter]::ConvertFromString($hex)) }
-function New-DotIcon($hex) {
+function New-DotIcon($hex, [bool]$badge = $false) {
   $bmp = New-Object Drawing.Bitmap 32, 32; $g = [Drawing.Graphics]::FromImage($bmp); $g.SmoothingMode = 'AntiAlias'
   $g.FillEllipse((New-Object Drawing.SolidBrush ([Drawing.ColorTranslator]::FromHtml('#2B2D31'))), 0, 0, 31, 31)
-  $g.FillEllipse((New-Object Drawing.SolidBrush ([Drawing.ColorTranslator]::FromHtml($hex))), 6, 6, 19, 19); $g.Dispose()
+  $g.FillEllipse((New-Object Drawing.SolidBrush ([Drawing.ColorTranslator]::FromHtml($hex))), 6, 6, 19, 19)
+  if ($badge) { $g.FillEllipse((New-Object Drawing.SolidBrush ([Drawing.Color]::White)), 17, -1, 16, 16); $g.FillEllipse((New-Object Drawing.SolidBrush ([Drawing.ColorTranslator]::FromHtml('#5865F2'))), 19, 1, 12, 12) }
+  $g.Dispose()
   [Drawing.Icon]::FromHandle($bmp.GetHicon()) }
-$icons = @{}; foreach ($k in $colors.Keys) { $icons[$k] = New-DotIcon $colors[$k] }
+$icons = @{}; foreach ($k in $colors.Keys) { $icons[$k] = New-DotIcon $colors[$k]; $icons["$k+u"] = New-DotIcon $colors[$k] $true }
 $abmp = New-Object Drawing.Bitmap 64, 64; $ag = [Drawing.Graphics]::FromImage($abmp); $ag.SmoothingMode = 'AntiAlias'   # app icon (same as the installed app.ico)
 $ag.FillEllipse((New-Object Drawing.SolidBrush ([Drawing.ColorTranslator]::FromHtml('#5865F2'))), 2, 2, 60, 60)
 $ag.FillEllipse((New-Object Drawing.SolidBrush ([Drawing.Color]::White)), 22, 22, 20, 20); $ag.Dispose()
 $win.Icon = [Windows.Interop.Imaging]::CreateBitmapSourceFromHIcon($abmp.GetHicon(), [Windows.Int32Rect]::Empty, [Windows.Media.Imaging.BitmapSizeOptions]::FromEmptyOptions())
 
-function Say([string]$t, [string]$icon = 'Information', [string]$b = 'OK') {
+if (Test-Path (Join-Path $PSScriptRoot 'Dialog.ps1')) { . (Join-Path $PSScriptRoot 'Dialog.ps1') }
+function Say([string]$t, [string]$icon = 'Information', [string]$b = 'OK', [string[]]$labels = $null) {
+  $__k = @{ Information = 'info'; Question = 'question'; Warning = 'warning'; Error = 'error'; Success = 'success' }[$icon]; if (-not $__k) { $__k = 'info' }
+  if (Get-Command Show-DwDialog -ErrorAction SilentlyContinue) { return (Show-DwDialog -Text $t -Buttons $b -Kind $__k -Owner $win -Labels $labels) }   # styled dialog (Dialog.ps1)
+  # RLM at both ends of every line: bullets/brackets/Latin words stay in the right order in RTL message boxes
+  $t = (($t -split "`n") | ForEach-Object { [string][char]0x200F + $_ + [string][char]0x200F }) -join "`n"
   [string][System.Windows.MessageBox]::Show($win, $t, 'Discord WARP', $b, $icon, 'None', [System.Windows.MessageBoxOptions]::RtlReading) }
 function Set-Busy([bool]$on, [string]$msg = '') {
   $ui.Busy.Visibility = if ($on) { 'Visible' } else { 'Hidden' }; $ui.Foot.Text = $msg
-  foreach ($b in 'BtnCheck','BtnRepair','BtnPause','BtnUpdate','BtnReport','BtnUninstall','BtnInstall','BtnOpenDiscord','BtnGetDiscord','BtnWebDiscord') { $ui[$b].IsEnabled = -not $on }
+  foreach ($b in 'BtnCheck','BtnRepair','BtnPause','BtnUpdate','BtnReport','BtnUninstall','BtnInstall','BtnDiscord') { $ui[$b].IsEnabled = -not $on }
   if (-not $on) { Update-DiscordButtons } }
 function Clear-List([string]$title) { $ui.ListPanel.Children.Clear(); $ui.ListTitle.Text = $title }
 function Add-Row([string]$state, [string]$text) {
@@ -270,7 +274,7 @@ $pump.Add_Tick({
 $notify = New-Object System.Windows.Forms.NotifyIcon
 $notify.Icon = $icons.grey; $notify.Text = 'Discord WARP'; $notify.Visible = -not $isPackage
 $menu = New-Object System.Windows.Forms.ContextMenuStrip; $menu.RightToLeft = 'Yes'
-$miOpen = $menu.Items.Add('فتح'); $miRepair = $menu.Items.Add('إصلاح'); $miPause = $menu.Items.Add('إيقاف مؤقت'); [void]$menu.Items.Add('-'); $miExit = $menu.Items.Add('خروج')
+$miOpen = $menu.Items.Add('فتح'); $miRepair = $menu.Items.Add('إصلاح'); $miPause = $menu.Items.Add('إيقاف مؤقت'); $miUpdate = $menu.Items.Add('البحث عن تحديثات'); [void]$menu.Items.Add('-'); $miExit = $menu.Items.Add('خروج')
 $notify.ContextMenuStrip = $menu
 function Show-Main { $win.Show(); if ($win.WindowState -eq 'Minimized') { $win.WindowState = 'Normal' }; [void]$win.Activate(); Update-Status }
 $notify.Add_DoubleClick({ Show-Main }); $notify.Add_BalloonTipClicked({ Show-Main }); $miOpen.Add_Click({ Show-Main })
@@ -294,7 +298,7 @@ function Apply-Status($r) {
   elseif ($r.delay -gt 300) { $state = 'orange'; $title = 'الاتصال بطيء'; $sub = "السرعة: $($r.delay) ms. جرّب ""إصلاح"" إذا كان الديسكورد بطيئاً." }
   else { $state = 'green'; $title = 'الديسكورد يعمل عبر WARP'; $sub = "السرعة: $($r.delay) ms  |  آخر فحص: $(Get-Date -Format 'HH:mm')" }
   $ui.Dot.Fill = New-Brush $colors[$state]; $ui.StatusTitle.Text = $title; $ui.StatusSub.Text = $sub
-  $notify.Icon = $icons[$state]; $notify.Text = ("Discord WARP: $title").Substring(0, [Math]::Min(63, ("Discord WARP: $title").Length))
+  $notify.Icon = $icons["$state$(if ($script:updateInfo) { '+u' })"]; $notify.Text = ("Discord WARP: $title").Substring(0, [Math]::Min(63, ("Discord WARP: $title").Length))
   $installed = $r -and $r.installed
   $ui.BtnInstall.Visibility = if ($isPackage) { 'Visible' } else { 'Collapsed' }
   $ui.Actions.Visibility = if ($isPackage) { 'Collapsed' } else { 'Visible' }
@@ -348,25 +352,52 @@ $ui.BtnReport.Add_Click({
     Say "تم حفظ التقرير على سطح المكتب:`n$zip`n`nأرسل هذا الملف لمن يساعدك. لا يحتوي على كلمات سر أو مفاتيح." | Out-Null
     Start-Process explorer.exe -ArgumentList "/select,`"$zip`"" } })
 
-$ui.BtnUpdate.Add_Click({
-  if (Test-PreviewBlock) { return }
-  Set-Busy $true 'جارٍ البحث عن تحديث...'
-  Start-Bg $UpdateCheckWork @($Repo) { param($res) $r = $res | Select-Object -Last 1; Set-Busy $false ''
-    if (-not $r.ok) { Say "تعذّر فحص التحديثات الآن.`n(لا يوجد إنترنت، أو صفحة الأداة غير متاحة)" 'Warning' | Out-Null; return }
-    $cur = if (Test-Path "$dw\installed-version.txt") { (Get-Content "$dw\installed-version.txt" -Raw).Trim() } else { '0.0.0' }
-    if ([version]$r.tag -le [version]$cur) { Say "لديك آخر نسخة ($cur)." | Out-Null; return }
-    $notes = $r.body; if ($notes.Length -gt 400) { $notes = $notes.Substring(0, 400) + ' ...' }
-    if ((Say "توجد نسخة جديدة: $($r.tag) (نسختك: $cur)`n`n$notes`n`nتحديث الآن؟ سيطلب Windows صلاحية المسؤول." 'Question' 'YesNo') -ne 'Yes') { return }
-    Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$dw\Update.ps1`" -Yes"
-    $script:quit = $true; $notify.Visible = $false; $win.Close(); [Windows.Application]::Current.Shutdown() } })
-
+# ---- updates: button, tray item, background check (60 s after start, then every 6 h), badge on the tray icon ----
+$script:updateInfo = $null; $script:updInteractive = $false
+$snoozeFile = Join-Path $dw 'update-snooze.txt'
+function Get-InstalledVersion { if (Test-Path "$dw\installed-version.txt") { (Get-Content "$dw\installed-version.txt" -Raw).Trim() } else { '0.0.0' } }
+function Set-UpdateBadge {
+  $has = [bool]$script:updateInfo
+  $ui.BtnUpdate.Content = if ($has) { "تحديث متاح ($($script:updateInfo.tag))" } else { 'البحث عن تحديث' }
+  $ui.BtnUpdate.Background = New-Brush $(if ($has) { '#5865F2' } else { '#2B2D31' })
+  $miUpdate.Text = if ($has) { "تحديث متاح: $($script:updateInfo.tag)" } else { 'البحث عن تحديثات' }
+  if ($script:lastState) { $notify.Icon = $icons["$($script:lastState)$(if ($has) { '+u' })"] } }
+function Request-Update($r, [string]$cur, [bool]$inter) {
+  $notes = [string]$r.body; if ($notes.Length -gt 400) { $notes = $notes.Substring(0, 400) + ' ...' }
+  $a = Say ("يوجد تحديث جديد لأداة Discord WARP.`n`nالنسخة الجديدة: $($r.tag)`nنسختك الحالية: $cur`n`n$notes`n`nتحميل وتثبيت التحديث الآن؟ سيطلب Windows صلاحية المسؤول.") 'Question' 'YesNo' @('تحديث الآن', 'لاحقاً')
+  if ($a -ne 'Yes') { if (-not $inter) { Set-Content -LiteralPath $snoozeFile -Value "$($r.tag)|$((Get-Date).AddDays(1).ToString('o'))" -Encoding ASCII }; return }
+  Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile -STA -ExecutionPolicy Bypass -File `"$dw\Update.ps1`" -Yes"
+  $script:quit = $true; $notify.Visible = $false; $win.Close(); [Windows.Application]::Current.Shutdown() }
+function Invoke-UpdateCheck([bool]$interactive) {
+  if ($interactive -and (Test-PreviewBlock)) { return }
+  if ($isPackage -or $Preview) { return }
+  $script:updInteractive = $interactive
+  if ($interactive) { Set-Busy $true 'جارٍ البحث عن تحديثات...'; Clear-List 'التحديثات'; Add-Row 'RUN' 'جارٍ البحث عن نسخة أحدث على GitHub...' }
+  Start-Bg $UpdateCheckWork @($Repo, $env:DWARP_GH_TOKEN) { param($res)
+    $r = $res | Select-Object -Last 1; $inter = $script:updInteractive
+    if ($inter) { Set-Busy $false ''; Clear-List 'التحديثات' }
+    if (-not $r -or -not $r.ok) {
+      if ($inter) { Add-Row 'FAIL' 'تعذّر الوصول إلى صفحة التحديثات'; Say "تعذّر فحص التحديثات الآن.`nتأكد من الإنترنت ثم حاول مرة ثانية." 'Warning' | Out-Null }; return }
+    $cur = Get-InstalledVersion
+    if ([version]$r.tag -le [version]$cur) {
+      $script:updateInfo = $null; Set-UpdateBadge
+      if ($inter) { Add-Row 'PASS' "لديك آخر نسخة ($cur)"; Say "لديك آخر نسخة ($cur).`nلا يوجد تحديث." 'Success' | Out-Null }; return }
+    $script:updateInfo = $r; Set-UpdateBadge
+    if ($inter) { Add-Row 'INFO' "يوجد تحديث: $($r.tag) (نسختك: $cur)" }
+    else {   # background: ask at most once a day per version
+      if (Test-Path $snoozeFile) { $s = (Get-Content $snoozeFile -Raw).Trim() -split '\|'
+        if ($s.Count -eq 2 -and $s[0] -eq $r.tag -and [datetime]$s[1] -gt (Get-Date)) { return } } }
+    Request-Update $r $cur $inter } }
+$ui.BtnUpdate.Add_Click({ Invoke-UpdateCheck $true })
+$miUpdate.Add_Click({ Show-Main; Invoke-UpdateCheck $true })
+$updTimer = New-Object Windows.Threading.DispatcherTimer; $updTimer.Interval = [TimeSpan]::FromSeconds(60)
+$updTimer.Add_Tick({ $this.Interval = [TimeSpan]::FromHours(6); Invoke-UpdateCheck $false }); $updTimer.Start()
 # ---- Discord: open / download + install / browser ----
 $discordUpdate = Join-Path $env:LOCALAPPDATA 'Discord\Update.exe'
-function Update-DiscordButtons {
+function Update-DiscordButtons {   # one button: "open" when Discord is installed, otherwise "download + install"
   $has = Test-Path $discordUpdate
-  $ui.BtnOpenDiscord.IsEnabled = $has
-  $ui.BtnGetDiscord.Content = if ($has) { 'إعادة تثبيت الديسكورد' } else { 'تحميل وتثبيت الديسكورد' }
-  $ui.BtnGetDiscord.Background = New-Brush $(if ($has) { '#2B2D31' } else { '#5865F2' }) }
+  $ui.BtnDiscord.Content = if ($has) { 'فتح الديسكورد' } else { 'تحميل وتثبيت الديسكورد' }
+  $ui.BtnDiscord.Background = New-Brush '#5865F2'; $ui.BtnDiscord.BorderBrush = New-Brush '#5865F2' }
 $GetDiscordWork = {
   $ProgressPreference = 'SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
   $out = Join-Path $env:TEMP 'DiscordSetup.exe'
@@ -377,24 +408,26 @@ $GetDiscordWork = {
     @{ ok = $true; path = $out; mb = [math]::Round((Get-Item $out).Length / 1MB) }
   } catch { @{ ok = $false; err = $_.Exception.Message } }
 }
-$ui.BtnOpenDiscord.Add_Click({
-  if (Test-Path $discordUpdate) { Start-Process $discordUpdate -ArgumentList '--processStart Discord.exe'; $ui.Foot.Text = 'جارٍ فتح الديسكورد...' }
-  else { Say 'الديسكورد غير مثبّت على هذا الكمبيوتر. اضغط "تحميل وتثبيت الديسكورد".' | Out-Null } })
-$ui.BtnGetDiscord.Add_Click({
+$ui.BtnDiscord.Add_Click({
+  if (Test-Path $discordUpdate) { Start-Process $discordUpdate -ArgumentList '--processStart Discord.exe'; $ui.Foot.Text = 'جارٍ فتح الديسكورد...'; return }
   if ((Say "سيتم تحميل برنامج الديسكورد الرسمي (حوالي 160 ميغا) من موقع الديسكورد عبر WARP، ثم التأكد من توقيعه الرسمي وتثبيته.`nمتابعة؟" 'Question' 'YesNo') -ne 'Yes') { return }
   Set-Busy $true 'جارٍ تحميل الديسكورد... (حسب سرعة الإنترنت، عادةً 1 إلى 5 دقائق)'; Clear-List 'تحميل الديسكورد'; Add-Row 'RUN' 'تحميل المثبّت الرسمي من discord.com'
   Start-Bg $GetDiscordWork @() { param($res) $r = $res | Select-Object -Last 1; Clear-List 'تحميل الديسكورد'
     if ($r.ok) { Add-Row 'PASS' "تم التحميل ($($r.mb) ميغا)"; Add-Row 'PASS' 'التوقيع الرسمي من Discord سليم'; Add-Row 'RUN' 'جارٍ التثبيت... سيفتح الديسكورد وحده عند الانتهاء'
-      Start-Process $r.path; Set-Busy $false 'بدأ تثبيت الديسكورد. سيفتح وحده خلال دقيقة.' }
+      Start-Process $r.path; Set-Busy $false 'بدأ تثبيت الديسكورد. سيفتح وحده خلال دقيقة.'
+      $script:discordWaitUntil = (Get-Date).AddMinutes(10)   # switch the button to "open" as soon as Discord is installed
+      $w = New-Object Windows.Threading.DispatcherTimer; $w.Interval = [TimeSpan]::FromSeconds(5)
+      $w.Add_Tick({ if ((Test-Path $discordUpdate) -or (Get-Date) -ge $script:discordWaitUntil) { $this.Stop(); Update-DiscordButtons
+        if (Test-Path $discordUpdate) { Clear-List 'تحميل الديسكورد'; Add-Row 'PASS' 'تم تثبيت الديسكورد. من الآن اضغط "فتح الديسكورد".' } } }); $w.Start() }
     else { Add-Row 'FAIL' 'فشل التحميل أو التحقق من التوقيع'; Set-Busy $false "خطأ: $($r.err)"
       Say "تعذّر تحميل الديسكورد.`nتأكد أن الحالة خضراء ثم حاول مرة ثانية.`n`n$($r.err)" 'Warning' | Out-Null } } })
-$ui.BtnWebDiscord.Add_Click({
-  Start-Process 'https://discord.com/app'
-  $ui.Foot.Text = 'تم فتح discord.com/app في متصفحك. إذا لم يفتح: عطّل خيار "DNS الآمن / Secure DNS" في إعدادات المتصفح.' })
 
 $ui.BtnUninstall.Add_Click({
   if (Test-PreviewBlock) { return }
-  Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$dw\Uninstall.ps1`""
+  $a = Say ("إزالة Discord WARP من هذا الكمبيوتر:`n`nحذف كل شيء: الإعدادات + برنامج Clash Verge وكل ملفاته + حساب WARP والسجلات.`nالإعدادات فقط: يبقى Clash Verge وحساب WARP (لإعادة التثبيت لاحقاً).`n`nبعد الإزالة يعود ديسكورد محجوباً كما كان.") 'Warning' 'YesNoCancel' @('حذف كل شيء', 'الإعدادات فقط', 'إلغاء')
+  if ($a -eq 'Cancel') { return }
+  $mode = if ($a -eq 'Yes') { 'Full' } else { 'Settings' }
+  Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile -STA -ExecutionPolicy Bypass -File `"$dw\Uninstall.ps1`" -Mode $mode"
   $script:quit = $true; $notify.Visible = $false; $win.Close(); [Windows.Application]::Current.Shutdown() })
 
 # ---- install (package mode) ----
@@ -450,8 +483,7 @@ if (-not $isPackage -and (Test-Path $firstRun)) {   # first start after (re)inst
   Clear-List 'مرحباً! تم التثبيت'
   Add-Row 'PASS' 'الإعداد جاهز ويعمل تلقائياً مع Windows، وهذه الأيقونة تبقى بجانب الساعة.'
   if (Test-Path $discordUpdate) { Add-Row 'INFO' 'الديسكورد مثبّت عندك: اضغط "فتح الديسكورد".' }
-  else { Add-Row 'INFO' 'ليس عندك ديسكورد؟ اضغط "تحميل وتثبيت الديسكورد" (الزر البنفسجي).' }
-  Add-Row 'INFO' 'تفضّل المتصفح؟ اضغط "الديسكورد من المتصفح".' }
+  else { Add-Row 'INFO' 'ليس عندك ديسكورد؟ اضغط "تحميل وتثبيت الديسكورد" (الزر البنفسجي).' } }
 Update-DiscordButtons
 if ($Tray -and -not $isPackage) { Update-Status } else { Show-Main }
 [void]$app.Run()

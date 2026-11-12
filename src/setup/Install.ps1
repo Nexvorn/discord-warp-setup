@@ -25,8 +25,13 @@ $appLog = $ProgressLog   # extra copy of every log line for the app's progress v
 
 function Log([string]$m) { $l = "$(Get-Date -Format 'HH:mm:ss') $m"; Write-Host $l; Add-Content -LiteralPath $logFile -Value $l -Encoding UTF8
   if ($appLog) { Add-Content -LiteralPath $appLog -Value $l -Encoding UTF8 } }
+if (Test-Path (Join-Path $PSScriptRoot 'Dialog.ps1')) { . (Join-Path $PSScriptRoot 'Dialog.ps1') }
 function Say([string]$text, [string]$icon = 'Information', [string]$buttons = 'OK') {
+  # RLM at both ends of every line: bullets/brackets/Latin words stay in the right order in RTL message boxes
+  $text = (($text -split "`n") | ForEach-Object { [string][char]0x200F + $_ + [string][char]0x200F }) -join "`n"
   if ($NoPopups) { Log "[popup] $icon"; return $(if ($buttons -eq 'YesNo') { 'Yes' } else { 'OK' }) }   # the app asked the user beforehand
+  $__k = @{ Information = 'info'; Question = 'question'; Warning = 'warning'; Error = 'error'; Success = 'success' }[$icon]; if (-not $__k) { $__k = 'info' }
+  if (Get-Command Show-DwDialog -ErrorAction SilentlyContinue) { return (Show-DwDialog -Text $text -Buttons $buttons -Kind $__k) }   # styled dialog (Dialog.ps1)
   return [string][System.Windows.Forms.MessageBox]::Show($text, 'Discord WARP', $buttons, $icon,
     [System.Windows.Forms.MessageBoxDefaultButton]::Button1, [System.Windows.Forms.MessageBoxOptions]'RtlReading, RightAlign')
 }
@@ -198,7 +203,7 @@ Log "helper scripts copied to $dw"
 # app + updater + uninstaller, installed version, icon, shortcuts (Start menu + desktop), tray at logon
 $ver = (Get-Content (Join-Path $PSScriptRoot 'version.txt') -Raw).Trim()
 Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like "*$dw\App.ps1*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }   # old app instance
-foreach ($f in 'App.ps1', 'DiscordWarpLib.ps1', 'Update.ps1', 'Uninstall.ps1', 'version.txt') { Copy-Item (Join-Path $PSScriptRoot $f) $dw -Force }
+foreach ($f in 'App.ps1', 'DiscordWarpLib.ps1', 'Dialog.ps1', 'Update.ps1', 'Uninstall.ps1', 'version.txt') { Copy-Item (Join-Path $PSScriptRoot $f) $dw -Force }
 Set-Content -LiteralPath (Join-Path $dw 'installed-version.txt') -Value $ver -Encoding ASCII
 Set-Content -LiteralPath (Join-Path $dw 'first-run.flag') -Value $ver -Encoding ASCII   # app shows the welcome / next steps once
 Add-Type -AssemblyName System.Drawing

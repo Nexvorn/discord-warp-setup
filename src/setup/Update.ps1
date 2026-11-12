@@ -7,7 +7,12 @@ param([string]$Repo = 'Nexvorn/discord-warp-setup', [switch]$CheckOnly, [switch]
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 $dw = Join-Path $env:USERPROFILE '.discord-warp'
-function Say([string]$t, [string]$icon = 'Information', [string]$b = 'OK') {
+if (Test-Path (Join-Path $PSScriptRoot 'Dialog.ps1')) { . (Join-Path $PSScriptRoot 'Dialog.ps1') }
+function Say([string]$t, [string]$icon = 'Information', [string]$b = 'OK', [string[]]$labels = $null) {
+  $__k = @{ Information = 'info'; Question = 'question'; Warning = 'warning'; Error = 'error'; Success = 'success' }[$icon]; if (-not $__k) { $__k = 'info' }
+  if (Get-Command Show-DwDialog -ErrorAction SilentlyContinue) { return (Show-DwDialog -Text $t -Buttons $b -Kind $__k -Owner $null -Labels $labels) }   # styled dialog (Dialog.ps1)
+  # RLM at both ends of every line: bullets/brackets/Latin words stay in the right order in RTL message boxes
+  $t = (($t -split "`n") | ForEach-Object { [string][char]0x200F + $_ + [string][char]0x200F }) -join "`n"
   [string][System.Windows.Forms.MessageBox]::Show($t, 'Discord WARP', $b, $icon, [System.Windows.Forms.MessageBoxDefaultButton]::Button1, [System.Windows.Forms.MessageBoxOptions]'RtlReading, RightAlign') }
 
 $cur = '0.0.0'
@@ -15,8 +20,9 @@ $vf = Join-Path $dw 'installed-version.txt'
 if (Test-Path $vf) { $cur = (Get-Content $vf -Raw).Trim() }
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 try {
-  $rel = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest" -TimeoutSec 20 `
-         -Headers @{ 'User-Agent' = 'discord-warp-setup-updater'; 'Accept' = 'application/vnd.github+json' }
+  $hdr = @{ 'User-Agent' = 'discord-warp-setup-updater'; 'Accept' = 'application/vnd.github+json' }
+  if ($env:DWARP_GH_TOKEN) { $hdr['Authorization'] = "Bearer $env:DWARP_GH_TOKEN" }   # testing a private repo only; never stored
+  $rel = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest" -TimeoutSec 20 -Headers $hdr
 } catch {
   Say "تعذّر فحص التحديثات.`nتأكد من الإنترنت، أو أن صفحة الأداة على GitHub متاحة (عامة).`n`n$($_.Exception.Message)" 'Warning' | Out-Null; exit 1
 }
@@ -37,7 +43,9 @@ $tmp = Join-Path $env:TEMP "discord-warp-update-$latest"
 if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
 New-Item -ItemType Directory -Force $tmp | Out-Null
 $zip = Join-Path $tmp 'DiscordWARP-Setup.zip'
-Invoke-WebRequest $asset.browser_download_url -OutFile $zip -UseBasicParsing -Headers @{ 'User-Agent' = 'discord-warp-setup-updater' }
+$ProgressPreference = 'SilentlyContinue'
+if ($env:DWARP_GH_TOKEN) { Invoke-WebRequest $asset.url -OutFile $zip -UseBasicParsing -Headers @{ 'User-Agent' = 'discord-warp-setup-updater'; 'Accept' = 'application/octet-stream'; 'Authorization' = "Bearer $env:DWARP_GH_TOKEN" } }
+else { Invoke-WebRequest $asset.browser_download_url -OutFile $zip -UseBasicParsing -Headers @{ 'User-Agent' = 'discord-warp-setup-updater' } }
 $got = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
 if ($got -ne $want) { Remove-Item $tmp -Recurse -Force; Say 'بصمة الملف المحمّل لا تطابق البصمة المنشورة. تم إلغاء التحديث.' 'Error' | Out-Null; exit 1 }
 Expand-Archive $zip -DestinationPath $tmp -Force

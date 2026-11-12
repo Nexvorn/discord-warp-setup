@@ -15,7 +15,13 @@ $cvData = @((Join-Path $env:APPDATA 'io.github.clash-verge-rev.clash-verge-rev')
             (Join-Path $env:ProgramData 'clash-verge-service'), $cvHome)
 $startMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Discord WARP'
 $appsKey   = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DiscordWARP'
-function Say([string]$t, [string]$icon = 'Information', [string]$b = 'OK') {
+if (Test-Path (Join-Path $PSScriptRoot 'Dialog.ps1')) { . (Join-Path $PSScriptRoot 'Dialog.ps1') }
+function Say([string]$t, [string]$icon = 'Information', [string]$b = 'OK', [string[]]$labels = $null) {
+  if ($DryRun) { return 'OK' }
+  $__k = @{ Information = 'info'; Question = 'question'; Warning = 'warning'; Error = 'error'; Success = 'success' }[$icon]; if (-not $__k) { $__k = 'info' }
+  if (Get-Command Show-DwDialog -ErrorAction SilentlyContinue) { return (Show-DwDialog -Text $t -Buttons $b -Kind $__k -Owner $null -Labels $labels) }   # styled dialog (Dialog.ps1)
+  # RLM at both ends of every line: bullets/brackets/Latin words stay in the right order in RTL message boxes
+  $t = (($t -split "`n") | ForEach-Object { [string][char]0x200F + $_ + [string][char]0x200F }) -join "`n"
   if ($DryRun) { return 'OK' }
   [string][System.Windows.Forms.MessageBox]::Show($t, 'Discord WARP', $b, $icon, [System.Windows.Forms.MessageBoxDefaultButton]::Button2, [System.Windows.Forms.MessageBoxOptions]'RtlReading, RightAlign') }
 $logFile = Join-Path $env:TEMP "discord-warp-uninstall-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
@@ -38,9 +44,11 @@ if (-not $Mode) {
 # 2. elevate + run from a TEMP copy (the Full mode deletes the folder this script may live in)
 $isAdmin = (New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $DryRun -and (-not $isAdmin -or -not $Relaunched)) {
-  $copy = Join-Path $env:TEMP 'discord-warp-uninstall.ps1'
+  $cdir = Join-Path $env:TEMP 'discord-warp-uninstall'; New-Item -ItemType Directory -Force $cdir | Out-Null
+  $copy = Join-Path $cdir 'Uninstall.ps1'
   Copy-Item -LiteralPath $PSCommandPath $copy -Force
-  Start-Process powershell.exe -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$copy`" -Mode $Mode -Relaunched"
+  $dlg = Join-Path $PSScriptRoot 'Dialog.ps1'; if (Test-Path $dlg) { Copy-Item $dlg $cdir -Force }
+  Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList "-NoProfile -STA -ExecutionPolicy Bypass -File `"$copy`" -Mode $Mode -Relaunched"
   exit 0
 }
 Log "=== DiscordWARP uninstall, mode=$Mode, dry-run=$DryRun, user=$env:USERNAME ==="
