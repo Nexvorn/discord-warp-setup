@@ -1,11 +1,16 @@
-# Discord WARP v1.3 health check. Read-only (small test requests; clears the DNS client cache). No admin needed.
+# Discord WARP v1.4 health check. Read-only (small test requests; clears the DNS client cache). No admin needed.
 #   powershell -ExecutionPolicy Bypass -File "%ProgramFiles%\DiscordWARP\scripts\verify.ps1"
+# Delays include opening the connection through WARP (engine config unified-delay: false since v1.4).
 $ok = 0; $fail = 0; $warn = 0
 function Check($state, $msg) { $c = @{PASS='Green';FAIL='Red';WARN='Yellow';INFO='Gray'}[$state]; Write-Host ("[{0}] {1}" -f $state, $msg) -ForegroundColor $c
   switch ($state) { 'PASS' { $script:ok++ } 'FAIL' { $script:fail++ } 'WARN' { $script:warn++ } } }
+function Result { Write-Host ""; Write-Host "RESULT: $ok passed, $warn warnings, $fail failed" -ForegroundColor $(if ($fail) {'Red'} elseif ($warn) {'Yellow'} else {'Green'}) }
 $data = Join-Path $env:ProgramData 'DiscordWARP'
 $expectRoutes = '198.18.0.0/16','66.22.192.0/18','195.62.89.0/24','104.28.0.0/15'
-if (Test-Path (Join-Path $data 'paused.flag')) { Check WARN 'paused by the user (Discord WARP app -> resume)' }
+# paused (by the user, or automatically while another VPN is connected): the tunnel is intentionally off - nothing to test
+if (Test-Path (Join-Path $data 'paused.flag')) { Check WARN 'paused by the user (Discord WARP app -> resume)'; Result; return }
+$st = try { Get-Content (Join-Path $data 'state.json') -Raw -ErrorAction Stop | ConvertFrom-Json } catch { $null }
+if ($st -and $st.state -eq 'vpn') { Check WARN "another VPN connected ($($st.vpn)) - Discord WARP paused automatically until it disconnects"; Result; return }
 
 # 1. components
 $task = Get-ScheduledTask -TaskName 'DiscordWARP-Engine' -ErrorAction SilentlyContinue
@@ -46,9 +51,9 @@ if ($w -eq 'warp=off') { Check PASS "other apps: $ip $w (original ISP connection
 $api = Join-Path $PSScriptRoot 'mihomo-conns.ps1'
 try {
   $dl = & $api -ApiPath '/proxies/WARP/delay?url=https%3A%2F%2Fwww.cloudflare.com%2Fcdn-cgi%2Ftrace&timeout=6000' -Raw | ConvertFrom-Json
-  if ($dl.delay) { Check PASS "WARP tunnel reachable (delay $($dl.delay) ms)" } else { Check FAIL "WARP tunnel test failed: $($dl.message)" }
+  if ($dl.delay -and $dl.delay -lt 1500) { Check PASS "WARP tunnel reachable (delay $($dl.delay) ms)" } elseif ($dl.delay) { Check WARN "WARP tunnel slow (delay $($dl.delay) ms)" } else { Check FAIL "WARP tunnel test failed: $($dl.message)" }
   $dd = & $api -ApiPath '/proxies/WARP/delay?url=https%3A%2F%2Fdiscord.com%2Fapi%2Fv9%2Fgateway&timeout=6000' -Raw | ConvertFrom-Json
-  if ($dd.delay -and $dd.delay -lt 300) { Check PASS "Discord API via WARP ($($dd.delay) ms)" } elseif ($dd.delay) { Check WARN "Discord API via WARP slow ($($dd.delay) ms)" } else { Check FAIL "Discord API via WARP failed: $($dd.message)" }
+  if ($dd.delay -and $dd.delay -lt 1000) { Check PASS "Discord API via WARP ($($dd.delay) ms)" } elseif ($dd.delay) { Check WARN "Discord API via WARP slow ($($dd.delay) ms)" } else { Check FAIL "Discord API via WARP failed: $($dd.message)" }
   $grp = & $api -ApiPath '/proxies/DISCORD' -Raw | ConvertFrom-Json
   if ((@($grp.all) -join ',') -eq 'WARP') { Check PASS 'DISCORD group = WARP only (no DIRECT fallback)' } else { Check FAIL "DISCORD group members: $($grp.all -join ',')" }
   $conns = & $api
@@ -78,4 +83,4 @@ $dv = (Get-ChildItem "$env:LOCALAPPDATA\Discord\app-*" -Directory -ErrorAction S
 $mv = try { ((& (Join-Path $env:ProgramFiles 'DiscordWARP\mihomo.exe') -v) -split ' ')[2] } catch { '?' }
 $av = try { (Get-Content (Join-Path $data 'version.txt') -Raw).Trim() } catch { '?' }
 Check INFO "versions: Discord WARP $av | engine mihomo $mv | Discord $dv"
-Write-Host ""; Write-Host "RESULT: $ok passed, $warn warnings, $fail failed" -ForegroundColor $(if ($fail) {'Red'} elseif ($warn) {'Yellow'} else {'Green'})
+Result

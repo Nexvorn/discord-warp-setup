@@ -25,6 +25,11 @@ $StatusWork = {
   param($prog, $data)
   $r = @{ installed = (Test-Path (Join-Path $prog 'mihomo.exe')) -and (Test-Path (Join-Path $prog 'scripts\verify.ps1')); paused = Test-Path (Join-Path $data 'paused.flag') }
   if (-not $r.installed -or $r.paused) { return $r }
+  # v1.4: the engine supervisor pauses itself while another VPN is connected (state.json written by Engine.ps1)
+  $st = try { Get-Content (Join-Path $data 'state.json') -Raw -ErrorAction Stop | ConvertFrom-Json } catch { $null }
+  if ($st -and $st.state -eq 'vpn') { $r.vpn = if ($st.vpn) { [string]$st.vpn } else { 'VPN' }; return $r }
+  # engine (re)started less than 90 s ago (state.json "since" is rewritten at every engine start): the tunnel may still be getting ready
+  $r.warming = $false; try { if ($st -and $st.state -eq 'running' -and ((Get-Date) - [datetime]::Parse($st.since)).TotalSeconds -lt 90) { $r.warming = $true } } catch {}
   $r.core = [bool](Get-Process mihomo -ErrorAction SilentlyContinue)
   $r.svc  = $r.core
   $r.meta = (Get-NetAdapter -Name 'DiscordWARP' -ErrorAction SilentlyContinue).Status -eq 'Up'
@@ -72,6 +77,7 @@ $UpdateCheckWork = {
 $Tr = @(
   @('DiscordWARP service running', 'خدمة Discord WARP تعمل'), @('DiscordWARP service not running', 'خدمة Discord WARP متوقفة'),
   @('no other engine', 'لا يوجد برنامج آخر يتعارض مع النفق'), @('another engine running', 'يوجد برنامج آخر يتعارض مع النفق (Clash Verge)'), @('paused by the user', 'متوقف مؤقتاً من التطبيق'),
+  @('another VPN connected', 'يوجد VPN آخر متصل، لذلك Discord WARP متوقف تلقائياً حتى تفصله'),
   @('engine running', 'محرك الاتصال يعمل'), @('engine not running', 'محرك الاتصال متوقف'),
   @("TUN adapter 'DiscordWARP' up", 'محوّل النفق يعمل'), @('TUN adapter', 'محوّل النفق لا يعمل'),
   @('TUN routes present', 'مسارات الديسكورد داخل النفق'), @('TUN routes missing', 'بعض مسارات الديسكورد مفقودة'),
@@ -80,7 +86,7 @@ $Tr = @(
   @('TUN does not take over system DNS', 'إعدادات DNS للكمبيوتر لم تتغير'),
   @('discord.com ->', 'اسم discord.com يمر عبر النفق'), @('www.google.com ->', 'المواقع الأخرى تعمل بشكل عادي'),
   @('other apps:', 'باقي البرامج على إنترنتك الأصلي'),
-  @('WARP tunnel reachable', 'نفق WARP متصل'), @('WARP tunnel test failed', 'نفق WARP لا يستجيب'),
+  @('WARP tunnel reachable', 'نفق WARP متصل'), @('WARP tunnel slow', 'نفق WARP بطيء'), @('WARP tunnel test failed', 'نفق WARP لا يستجيب'),
   @('Discord API via WARP failed', 'خوادم الديسكورد لا تستجيب عبر WARP'), @('Discord API via WARP slow', 'خوادم الديسكورد بطيئة عبر WARP'), @('Discord API via WARP', 'خوادم الديسكورد تستجيب عبر WARP'),
   @('DISCORD group = WARP only', 'لا تسريب: الديسكورد عبر WARP فقط'),
   @('Discord app:', 'تطبيق الديسكورد: كل اتصالاته عبر WARP'), @('Discord app not running', 'تطبيق الديسكورد مغلق حالياً'), @('Discord running but idle', 'تطبيق الديسكورد مفتوح بدون اتصالات الآن'),
@@ -188,7 +194,7 @@ $ui = @{}; foreach ($n in $uiNames) { $ui[$n] = $win.FindName($n) }
 $ui.Ver.Text = "الإصدار $appVersion" + $(if ($Preview) { '  (معاينة)' } else { '' })
 if ($SelfTest) { "ui controls found: $(@($ui.Values | Where-Object { $_ }).Count)/$($uiNames.Count)"; exit 0 }
 
-$colors = @{ green = '#23A55A'; red = '#F23F43'; orange = '#F0B232'; grey = '#80848E' }
+$colors = @{ green = '#23A55A'; red = '#F23F43'; orange = '#F0B232'; grey = '#80848E'; blue = '#5865F2' }
 function New-Brush($hex) { New-Object Windows.Media.SolidColorBrush ([Windows.Media.ColorConverter]::ConvertFromString($hex)) }
 function New-DotIcon($hex, [bool]$badge = $false) {
   $bmp = New-Object Drawing.Bitmap 32, 32; $g = [Drawing.Graphics]::FromImage($bmp); $g.SmoothingMode = 'AntiAlias'
@@ -258,11 +264,13 @@ function Apply-Status($r) {
   elseif (-not $r.installed) { $title = 'غير مثبّت'; $sub = if ($isPackage) { 'اضغط "تثبيت" للبدء. يستغرق 2 إلى 5 دقائق.' } else { 'شغّل ملف التثبيت.' } }
   elseif ($r.paused -and $isPackage) { $title = 'مثبّت (متوقف مؤقتاً)'; $sub = 'التثبيت سيعيد التشغيل.' }
   elseif ($r.paused) { $title = 'متوقف مؤقتاً'; $sub = 'الديسكورد لا يمر عبر WARP الآن. اضغط "تشغيل" للعودة.' }
+  elseif ($r.vpn) { $state = 'blue'; $title = "يوجد VPN آخر متصل: $($r.vpn)"; $sub = "Discord WARP متوقف تلقائياً، والديسكورد يعمل الآن عبر $($r.vpn). عندما تفصل $($r.vpn) يعود Discord WARP وحده خلال نصف دقيقة تقريباً." }
+  elseif ($r.warming -and -not ($r.delay -and $r.delay -le 1000)) { $title = 'جارٍ تجهيز نفق WARP...'; $sub = 'يستغرق أقل من دقيقة. لا تحتاج للضغط على أي زر.'; $recheck.Stop(); $recheck.Start() }
   elseif (-not ($r.svc -and $r.core -and $r.meta)) { $state = 'red'; $title = 'محرك الاتصال لا يعمل'; $sub = 'اضغط "إصلاح".' }
   elseif (-not $r.nrpt) { $state = 'red'; $title = 'إعداد ناقص'; $sub = 'توجيه أسماء الديسكورد مفقود. أعد التثبيت.' }
   elseif (-not $r.delay) { $state = 'red'; $title = 'نفق WARP لا يستجيب'; $sub = 'يتم الإصلاح تلقائياً خلال دقيقة. إذا استمر أكثر من دقيقتين اضغط "إصلاح".' }
-  elseif ($r.delay -gt 300) { $state = 'orange'; $title = 'الاتصال بطيء'; $sub = "السرعة: $($r.delay) ms. جرّب ""إصلاح"" إذا كان الديسكورد بطيئاً." }
-  else { $state = 'green'; $title = 'الديسكورد يعمل عبر WARP'; $sub = "السرعة: $($r.delay) ms  |  آخر فحص: $(Get-Date -Format 'HH:mm')" }
+  elseif ($r.delay -gt 1000) { $state = 'orange'; $title = 'الاتصال بطيء'; $sub = "زمن الاتصال: $($r.delay) ms. يتم الإصلاح تلقائياً، أو اضغط ""إصلاح"" إذا كان الديسكورد بطيئاً." }
+  else { $state = 'green'; $title = 'الديسكورد يعمل عبر WARP'; $sub = "زمن الاتصال: $($r.delay) ms  |  آخر فحص: $(Get-Date -Format 'HH:mm')" }
   $ui.Dot.Fill = New-Brush $colors[$state]; $ui.StatusTitle.Text = $title; $ui.StatusSub.Text = $sub
   $notify.Icon = $icons["$state$(if ($script:updateInfo) { '+u' })"]; $notify.Text = ("Discord WARP: $title").Substring(0, [Math]::Min(63, ("Discord WARP: $title").Length))
   $installed = $r -and $r.installed
@@ -273,7 +281,7 @@ function Apply-Status($r) {
     $ui.BtnInstall.RaiseEvent((New-Object Windows.RoutedEventArgs ([Windows.Controls.Primitives.ButtonBase]::ClickEvent))) }
   $paused = $r -and $r.paused
   $ui.BtnPause.Content = if ($paused) { 'تشغيل' } else { 'إيقاف مؤقت' }; $miPause.Text = $ui.BtnPause.Content
-  foreach ($b in 'BtnCheck','BtnRepair') { $ui[$b].IsEnabled = $installed -and -not $paused }
+  foreach ($b in 'BtnCheck','BtnRepair') { $ui[$b].IsEnabled = $installed -and -not $paused -and -not ($r -and $r.vpn) }
   Update-DiscordButtons
   # notify only if the problem outlasts the engine's own self-heal (red at two status refreshes in a row, about 3 min apart)
   $script:redCount = if ($state -eq 'red') { [int]$script:redCount + 1 } else { 0 }
@@ -302,7 +310,7 @@ function Test-PreviewBlock { if ($Preview) { Say 'هذه معاينة فقط: ا
 $ui.BtnPause.Add_Click({
   if (Test-PreviewBlock) { return }
   $paused = Test-Path $pausedFlag
-  $q = if ($paused) { 'تشغيل مرور الديسكورد عبر WARP مرة ثانية؟' } else { "إيقاف مؤقت: الديسكورد سيتوقف عن المرور عبر WARP (سيعود محجوباً) حتى تضغط ""تشغيل"".`nمفيد إذا أردت استخدام VPN آخر. يبقى الإيقاف حتى بعد إعادة تشغيل الكمبيوتر.`nمتابعة؟" }
+  $q = if ($paused) { 'تشغيل مرور الديسكورد عبر WARP مرة ثانية؟' } else { "إيقاف مؤقت: الديسكورد سيتوقف عن المرور عبر WARP (سيعود محجوباً) حتى تضغط ""تشغيل"".`nيبقى الإيقاف حتى بعد إعادة تشغيل الكمبيوتر.`n(لا تحتاجه لبرامج VPN الأخرى: Discord WARP يتوقف وحده عند اتصالها ويعود بعد فصلها.)`nمتابعة؟" }
   if ((Say $q 'Question' 'YesNo') -ne 'Yes') { return }
   try { Send-EngineCommand $(if ($paused) { 'resume' } else { 'pause' }) } catch { Say "تعذّر إرسال الأمر لخدمة Discord WARP.`n$($_.Exception.Message)" 'Warning' | Out-Null; return }
   Set-Busy $true $(if ($paused) { 'جارٍ التشغيل... (حوالي 15 ثانية)' } else { 'جارٍ الإيقاف...' })
@@ -448,12 +456,22 @@ $ui.BtnInstall.Add_Click({
 
 # ---- start ----
 $refresh = New-Object Windows.Threading.DispatcherTimer; $refresh.Interval = [TimeSpan]::FromMinutes(3); $refresh.Add_Tick({ Update-Status }); $refresh.Start()
+# v1.4: refresh at once when the engine supervisor changes state.json (another VPN connected/disconnected, engine (re)started)
+$script:stateStamp = $null
+$stateWatch = New-Object Windows.Threading.DispatcherTimer; $stateWatch.Interval = [TimeSpan]::FromSeconds(2)
+$stateWatch.Add_Tick({
+  $s = try { (Get-Item (Join-Path $data 'state.json') -ErrorAction Stop).LastWriteTimeUtc.Ticks } catch { 0 }
+  if ($null -ne $script:stateStamp -and $s -ne $script:stateStamp) { Update-Status }
+  $script:stateStamp = $s })
+if (-not $isPackage) { $stateWatch.Start() }
+# while a new tunnel is being prepared the status is re-checked after 20 s instead of waiting for the 3-min refresh
+$recheck = New-Object Windows.Threading.DispatcherTimer; $recheck.Interval = [TimeSpan]::FromSeconds(20); $recheck.Add_Tick({ $this.Stop(); Update-Status })
 $pump.Start()
 $firstRun = Join-Path $userDir 'first-run.flag'
 if (-not $isPackage -and (Test-Path $firstRun)) {   # first start after (re)install: welcome + where to go next
   Remove-Item $firstRun -Force -ErrorAction SilentlyContinue; $Tray = $false
   Clear-List 'مرحباً! تم التثبيت'
-  Add-Row 'PASS' 'الإعداد جاهز ويعمل تلقائياً مع Windows، وهذه الأيقونة تبقى بجانب الساعة.'
+  Add-Row 'PASS' 'الإعداد جاهز ويعمل تلقائياً مع Windows.'
   if (Test-Path $discordUpdate) { Add-Row 'INFO' 'الديسكورد مثبّت عندك: اضغط "فتح الديسكورد".' }
   else { Add-Row 'INFO' 'ليس عندك ديسكورد؟ اضغط "تحميل وتثبيت الديسكورد" (الزر البنفسجي).' } }
 Update-DiscordButtons

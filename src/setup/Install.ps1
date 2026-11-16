@@ -58,8 +58,8 @@ if ($code -ne '204') { Fail 'لا يوجد اتصال بالإنترنت. تأك
 $def = Get-NetRoute -DestinationPrefix 0.0.0.0/0 -ErrorAction SilentlyContinue | Sort-Object RouteMetric | Select-Object -First 1
 $nic = if ($def) { Get-NetAdapter -InterfaceIndex $def.ifIndex -ErrorAction SilentlyContinue }
 Log "default route: $($def.InterfaceAlias) ($($nic.InterfaceDescription)) via $($def.NextHop)"
-if ($nic -and $nic.InterfaceDescription -match 'TAP|Wintun|WireGuard|NordLynx|TunnelBear|Windscribe|OpenVPN|Cloudflare|Meta Tunnel|DiscordWARP|VPN') {
-  Fail "يوجد برنامج VPN شغّال الآن ($($nic.InterfaceDescription)).`nأطفئ (Disconnect) أي برنامج VPN ثم حاول مرة أخرى." 'a VPN carries the default route' }
+$otherVpn = Get-DwForeignVpn   # also catches VPNs that keep the default route and add 0.0.0.0/1 + 128.0.0.0/1 (OpenVPN def1)
+if ($otherVpn) { Fail "يوجد برنامج VPN متصل الآن ($otherVpn).`nافصله (Disconnect) ثم حاول مرة أخرى. بعد التثبيت لا داعي لذلك: Discord WARP يتوقف وحده عندما يتصل VPN آخر." "another VPN is connected: $otherVpn" }
 $warpCli = Join-Path $env:ProgramFiles 'Cloudflare\Cloudflare WARP\warp-cli.exe'
 if (Test-Path $warpCli) {
   $ErrorActionPreference = 'Continue'; $ws = (& $warpCli status 2>&1 | Out-String); $ErrorActionPreference = 'Stop'
@@ -201,6 +201,9 @@ if ($r.Fail -gt 0) {
   Log 'restarting the engine once to recreate the tunnel'
   Set-Content -LiteralPath (Join-Path $cmdDir 'restart') -Value '1' -Encoding ASCII; Start-Sleep 20
   $r = Invoke-Verify; Log "verify #2: $($r.Pass) passed, $($r.Warn) warnings, $($r.Fail) failed" }
+if ($r.Fail -gt 0) {   # a first WARP tunnel can need longer on some networks (2026-11-14: a second PC showed "finished with a problem" but worked)
+  Log 'waiting 30 s for the tunnel, then checking once more'; Start-Sleep 30
+  $r = Invoke-Verify; Log "verify #3: $($r.Pass) passed, $($r.Warn) warnings, $($r.Fail) failed" }
 ($r.Text -split "`n" | Where-Object { $_ -match '^\[(PASS|FAIL|WARN|INFO)\]|RESULT' }) | ForEach-Object { Log "  $($_.Trim())" }
 } catch { Fail "حدث خطأ غير متوقع:`n$($_.Exception.Message)" "exception: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)" }
 

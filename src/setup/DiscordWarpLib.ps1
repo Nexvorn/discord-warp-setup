@@ -123,6 +123,67 @@ function Get-BootstrapDns {
   return $def.NextHop
 }
 
+# ---------- other VPN detection (v1.4) ----------
+# A full-tunnel VPN (NordVPN, Windscribe, Proton VPN, WireGuard, OpenVPN, the Cloudflare WARP app, a Windows VPN connection, ...)
+# is "connected" when Windows would send ordinary internet traffic (probe 1.1.1.1) through a virtual adapter instead of the
+# real network adapter - whether the VPN replaced the default route or added 0.0.0.0/1 + 128.0.0.0/1 (OpenVPN "def1").
+# Virtual adapters that can carry the real connection (Hyper-V external switch, bridge, NIC team, USB tethering) are not VPNs.
+# Our own TUN "DiscordWARP" only carries Discord ranges, so it is never the route to 1.1.1.1.
+$script:DW_RealVirtual = 'Hyper-V Virtual Ethernet|Network Adapter Multiplexor|MAC Bridge|Remote NDIS|Mobile Broadband|Wi-Fi Direct'
+$script:DW_VpnNames = [ordered]@{
+  'NordLynx|NordVPN' = 'NordVPN'; 'Windscribe' = 'Windscribe'; 'Proton' = 'Proton VPN'; 'ExpressVPN|Lightway' = 'ExpressVPN'
+  'Mullvad' = 'Mullvad VPN'; 'Surfshark' = 'Surfshark'; 'Cloudflare' = 'Cloudflare WARP'; 'Private Internet Access|\bPIA\b' = 'Private Internet Access'
+  'Hotspot Shield|Hydra|AnchorFree' = 'Hotspot Shield'; 'TunnelBear' = 'TunnelBear'; 'CyberGhost' = 'CyberGhost'; 'IPVanish' = 'IPVanish'
+  'PureVPN' = 'PureVPN'; 'hide\.me' = 'hide.me'; 'Psiphon' = 'Psiphon'; 'Urban' = 'Urban VPN'; 'Tailscale' = 'Tailscale'; 'ZeroTier' = 'ZeroTier'
+  'Kaspersky' = 'Kaspersky VPN'; 'Avast|AVG' = 'Avast VPN'; 'Norton' = 'Norton VPN'; 'Bitdefender' = 'Bitdefender VPN'; 'Planet' = 'PlanetVPN'
+  'WireGuard' = 'WireGuard'; 'TAP-Windows|OpenVPN|ovpn-dco' = 'OpenVPN'; 'WAN Miniport' = 'Windows VPN'
+}
+function Get-DwVpnName([string]$Name, [string]$Description) {
+  foreach ($k in $script:DW_VpnNames.Keys) { if ("$Name $Description" -match $k) { return $script:DW_VpnNames[$k] } }
+  if ($Name) { return $Name }; if ($Description) { return $Description }; return 'VPN'
+}
+function Resolve-DwForeignVpn($Route, $Adapter) {
+  # Pure (unit-tested): $Route = best route to an internet address (InterfaceAlias, InterfaceIndex), $Adapter = the
+  # Get-NetAdapter object of that interface or $null. Returns $null (no other VPN) or the VPN's display name.
+  if (-not $Route) { return $null }                                   # offline: not a VPN question
+  if ($Route.InterfaceAlias -eq 'DiscordWARP') { return $null }
+  if (-not $Adapter) { return (Get-DwVpnName $Route.InterfaceAlias '') }   # PPP/IKEv2 (Windows VPN) interfaces have no NetAdapter object
+  if ($Adapter.Name -eq 'DiscordWARP') { return $null }
+  if ($Adapter.HardwareInterface) { return $null }
+  if ($Adapter.InterfaceDescription -match $script:DW_RealVirtual) { return $null }
+  return (Get-DwVpnName $Adapter.Name $Adapter.InterfaceDescription)
+}
+function Get-DwInternetRoute {
+  # The route Windows would use for ordinary internet traffic right now (~45 ms).
+  Find-NetRoute -RemoteIPAddress 1.1.1.1 -ErrorAction SilentlyContinue | Where-Object { $_.DestinationPrefix } | Select-Object -First 1
+}
+# ---------- WARP endpoint port (v1.4) ----------
+# The ISP may throttle new WireGuard flows to WARP's default port 2408: on 2026-11-16 new tunnels to 162.159.192.1:2408
+# failed while ports 4500 and 1701 of the same Cloudflare address answered in ~40 ms. WARP accepts all four ports below.
+$script:DW_WarpPorts = @(2408, 4500, 1701, 500)
+function Get-DwWarpPort([string]$ConfigText) {
+  # Pure: the "port:" of the WARP proxy in an engine config, or 0.
+  $i = $ConfigText.IndexOf('- name: WARP'); if ($i -lt 0) { return 0 }
+  $m = [regex]::Match($ConfigText.Substring($i), '(?m)^\s+port:\s*(\d+)'); if ($m.Success) { return [int]$m.Groups[1].Value }; return 0
+}
+function Set-DwWarpPort([string]$ConfigText, [int]$Port) {
+  # Pure: the config text with the WARP proxy's port replaced (only that one line; other text unchanged).
+  $i = $ConfigText.IndexOf('- name: WARP'); if ($i -lt 0) { return $ConfigText }
+  $re = New-Object Text.RegularExpressions.Regex '(?m)^(\s+port:\s*)\d+'
+  return $ConfigText.Substring(0, $i) + $re.Replace($ConfigText.Substring($i), ('${1}' + $Port), 1)
+}
+function Get-DwNextWarpPort([int]$Current) {
+  # Pure: the next port to try after $Current (unknown port -> the first one).
+  $idx = [array]::IndexOf($script:DW_WarpPorts, $Current)
+  return $script:DW_WarpPorts[($idx + 1) % $script:DW_WarpPorts.Count]
+}
+
+function Get-DwForeignVpn {
+  # Live check: $null or the name of the connected full-tunnel VPN.
+  $r = Get-DwInternetRoute; if (-not $r) { return $null }
+  Resolve-DwForeignVpn $r (Get-NetAdapter -IncludeHidden -InterfaceIndex $r.InterfaceIndex -ErrorAction SilentlyContinue)
+}
+
 function Test-MihomoConfig([string]$MihomoExe, [string]$ResourceDir, [string]$ConfigText, [string]$ProfileText, [string]$WorkDir) {
   # Validates "config.yaml tun block (enabled) + profile" with "verge-mihomo -t" in a private work dir; deletes it afterwards.
   $ErrorActionPreference = 'Continue'   # native stderr must not become a terminating error
@@ -142,13 +203,16 @@ function New-EngineConfig([string]$ProfileText, [string]$Secret) {
   # Complete mihomo config for the DiscordWARP engine (v1.3+, no Clash Verge): header + selective TUN + the Discord profile.
   # Same TUN settings as the tested Clash Verge setup (stack "mips", dns-mode disabled, Discord routes only); no TCP API port,
   # API only on the local named pipe \\.\pipe\discord-warp-mihomo with a random secret.
+  # unified-delay false (v1.4): delay tests include opening the connection (TCP + TLS through WARP). With true, mihomo
+  # reported only a second request on an already open connection, so a tunnel that needed 5-20 s per new connection
+  # still showed ~25 ms and passed every check (2026-11-16).
   $routes = ($script:DW_RouteAddr | ForEach-Object { "  - $_" }) -join "`n"
   $head = @"
 # Discord WARP engine configuration - generated by Install.ps1 $(Get-Date -Format 'yyyy-MM-dd HH:mm'). Contains the WARP private key.
 mode: rule
 log-level: warning
 allow-lan: false
-unified-delay: true
+unified-delay: false
 external-controller: ''
 external-controller-pipe: \\.\pipe\discord-warp-mihomo
 secret: $Secret
