@@ -43,7 +43,9 @@ if ($d -like '198.18.*') { Check PASS "discord.com -> $d (via the engine)" } els
 if ($g -and $g -notlike '198.18.*') { Check PASS "www.google.com -> $g (normal DNS)" } else { Check FAIL "www.google.com -> $g" }
 
 # 4. other apps use the original connection
-$t = curl.exe -s --max-time 10 https://1.1.1.1/cdn-cgi/trace
+# .NET request, not curl.exe: since 2026-11-17 Defender flags "PowerShell starts curl.exe https://1.1.1.1/..." as ClickFix (ClickFix.ML.J) and blocks it
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$t = try { (Invoke-WebRequest -Uri 'https://1.1.1.1/cdn-cgi/trace' -UseBasicParsing -TimeoutSec 10).Content -split "`n" } catch { @() }
 $ip = ($t | Select-String '^ip=').Line; $w = ($t | Select-String '^warp=').Line
 if ($w -eq 'warp=off') { Check PASS "other apps: $ip $w (original ISP connection)" } else { Check FAIL "other apps: $ip $w" }
 

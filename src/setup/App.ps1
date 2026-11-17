@@ -42,7 +42,7 @@ $StatusWork = {
 $CheckWork = { param($scripts) & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $scripts 'verify.ps1') 2>&1 | Out-String -Width 250 }
 $RepairWork = { param($cmdDir) Set-Content -LiteralPath (Join-Path $cmdDir 'restart') -Value '1' -Encoding ASCII; Start-Sleep 15; 'ok' }
 $ReportWork = {
-  param($prog, $data)
+  param($prog, $data, $outDir)   # $outDir: Desktop (save) or %TEMP% (send to Telegram, then deleted)
   $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
   $tmp = Join-Path $env:TEMP "DiscordWARP-report-$stamp"; New-Item -ItemType Directory -Force $tmp | Out-Null
   function Mask([string]$t) { $t = [regex]::Replace($t, '(?m)(private-key|PrivateKey|secret|access_token|license_key|device_id)(\s*[:=]\s*)\S+', '$1$2<hidden>')
@@ -61,9 +61,32 @@ $ReportWork = {
   $logs = Join-Path $data 'logs'
   foreach ($f in @(Get-ChildItem $logs -Filter 'install-*.log' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 2) + @(Get-Item (Join-Path $logs 'engine-supervisor.log'), (Join-Path $logs 'engine.log') -ErrorAction SilentlyContinue)) {
     Set-Content (Join-Path $tmp $f.Name) (Mask (Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue)) -Encoding UTF8 }
-  $zip = Join-Path ([Environment]::GetFolderPath('Desktop')) "DiscordWARP-report-$stamp.zip"
+  $result = ((Get-Content (Join-Path $tmp 'verify.txt') -ErrorAction SilentlyContinue) | Where-Object { $_ -match '^RESULT:' } | Select-Object -Last 1) -replace '^RESULT:\s*', ''
+  $zip = Join-Path $outDir "DiscordWARP-report-$stamp.zip"
   Compress-Archive -Path "$tmp\*" -DestinationPath $zip -Force; Remove-Item $tmp -Recurse -Force
-  $zip
+  @{ zip = $zip; result = $result; stamp = $stamp }
+}
+# Sends a report zip to the developer's Telegram bot (report-target.json next to App.ps1: {"token": "...", "chat": "..."}).
+# Uses .NET HttpClient (not curl.exe): Windows user and PC names may contain non-ASCII text.
+$SendReportWork = {
+  param($zip, $target, $caption)
+  try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Add-Type -AssemblyName System.Net.Http
+    $cfg = Get-Content $target -Raw | ConvertFrom-Json
+    $http = New-Object System.Net.Http.HttpClient; $http.Timeout = [TimeSpan]::FromSeconds(90)
+    $form = New-Object System.Net.Http.MultipartFormDataContent
+    $form.Add((New-Object System.Net.Http.StringContent([string]$cfg.chat)), 'chat_id')
+    $form.Add((New-Object System.Net.Http.StringContent($caption)), 'caption')
+    $fs = [IO.File]::OpenRead($zip)
+    $file = New-Object System.Net.Http.StreamContent($fs)
+    $file.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse('application/zip')
+    $form.Add($file, 'document', [IO.Path]::GetFileName($zip))
+    try { $resp = $http.PostAsync("https://api.telegram.org/bot$($cfg.token)/sendDocument", $form).GetAwaiter().GetResult()
+          $body = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult() } finally { $fs.Dispose(); $http.Dispose() }
+    $ok = try { [bool]($body | ConvertFrom-Json).ok } catch { $false }
+    if ($ok) { @{ ok = $true } } else { @{ ok = $false; err = "HTTP $([int]$resp.StatusCode)" } }   # never echo the URL (it contains the bot token)
+  } catch { @{ ok = $false; err = ($_.Exception.GetBaseException().Message -replace 'bot\d+:[\w-]+', 'bot<hidden>') } }
 }
 $UpdateCheckWork = {
   param($repo, $token)
@@ -320,12 +343,32 @@ $ui.BtnPause.Add_Click({
 $miPause.Add_Click({ Show-Main; $ui.BtnPause.RaiseEvent((New-Object Windows.RoutedEventArgs ([Windows.Controls.Primitives.ButtonBase]::ClickEvent))) })
 $miRepair.Add_Click({ Show-Main; $ui.BtnRepair.RaiseEvent((New-Object Windows.RoutedEventArgs ([Windows.Controls.Primitives.ButtonBase]::ClickEvent))) })
 
+$reportTarget = Join-Path $here 'report-target.json'   # added by build.ps1 only when secrets\telegram.json exists
+function Show-SavedReport([string]$zip, [string]$prefix = '') {
+  Set-Busy $false "تم حفظ التقرير على سطح المكتب: $zip"
+  Say "$($prefix)تم حفظ التقرير على سطح المكتب:`n$zip`n`nأرسل هذا الملف لمن يساعدك. لا يحتوي على كلمات سر أو مفاتيح." | Out-Null
+  Start-Process explorer.exe -ArgumentList "/select,`"$zip`"" }
 $ui.BtnReport.Add_Click({
+  $script:reportDesktop = [Environment]::GetFolderPath('Desktop')
+  $script:reportSend = $false
+  if (Test-Path $reportTarget) {
+    $a = Say "سيتم تجهيز تقرير عن حالة البرنامج وإرساله مباشرة إلى المطوّر عبر تيليجرام.`n`nيحتوي التقرير على: اسم جهازك واسم المستخدم في ويندوز وعنوان الإنترنت (IP) وسجلات البرنامج.`nلا يحتوي على كلمات سر أو مفاتيح أو رسائلك في الديسكورد." 'Question' 'YesNoCancel' @('إرسال للمطوّر', 'حفظ على سطح المكتب فقط', 'إلغاء')
+    if ($a -eq 'Cancel') { return }
+    $script:reportSend = ($a -eq 'Yes') }
   Set-Busy $true 'جارٍ تجهيز التقرير... (حوالي 20 ثانية)'
-  Start-Bg $ReportWork @($prog, $data) { param($res) $zip = [string]($res | Select-Object -Last 1)
-    Set-Busy $false "تم حفظ التقرير على سطح المكتب: $zip"
-    Say "تم حفظ التقرير على سطح المكتب:`n$zip`n`nأرسل هذا الملف لمن يساعدك. لا يحتوي على كلمات سر أو مفاتيح." | Out-Null
-    Start-Process explorer.exe -ArgumentList "/select,`"$zip`"" } })
+  $outDir = if ($script:reportSend) { $env:TEMP } else { $script:reportDesktop }
+  Start-Bg $ReportWork @($prog, $data, $outDir) { param($res) $r = $res | Select-Object -Last 1
+    if (-not $script:reportSend) { Show-SavedReport $r.zip; return }
+    $script:pendingReport = $r
+    $cap = "Discord WARP $appVersion | $env:COMPUTERNAME ($env:USERNAME) | $($r.stamp) | verify: $($r.result)"
+    Set-Busy $true 'جارٍ إرسال التقرير...'
+    Start-Bg $SendReportWork @($r.zip, $reportTarget, $cap) { param($s) $s = $s | Select-Object -Last 1; $zip = $script:pendingReport.zip
+      if ($s.ok) { Remove-Item $zip -Force -ErrorAction SilentlyContinue
+        Set-Busy $false 'تم إرسال التقرير إلى المطوّر.'
+        Say 'تم إرسال التقرير إلى المطوّر بنجاح.' 'Success' | Out-Null; return }
+      $saved = Join-Path $script:reportDesktop ([IO.Path]::GetFileName($zip))
+      try { Move-Item $zip $saved -Force } catch { $saved = $zip }
+      Show-SavedReport $saved "تعذّر الإرسال عبر تيليجرام ($($s.err)).`n`n" } } })
 
 # ---- updates: button, tray item, background check (60 s after start, then every 6 h), badge on the tray icon ----
 $script:updateInfo = $null; $script:updInteractive = $false

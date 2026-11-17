@@ -7,7 +7,9 @@
     against the GitHub asset digests pinned in src\setup\DiscordWarpLib.ps1.
   - Re-encodes setup\*.ps1 as UTF-8 WITH BOM (Windows PowerShell 5.1 needs it for the Arabic UI text) and parse-checks every script.
   - Adds LICENSE and THIRD_PARTY_NOTICES.md, writes SHA256SUMS.txt, zips.
-  The package contains NO secrets: every PC creates its own free WARP registration at install time.
+  The package contains NO WARP secrets: every PC creates its own free WARP registration at install time.
+  Exception: if secrets\telegram.json exists, its Telegram bot token + chat id are added as setup\report-target.json
+  (the "send report" button). Anyone with the package can read that token; use a bot that does nothing else.
 #>
 param([switch]$NoZip)
 $ErrorActionPreference = 'Stop'
@@ -41,6 +43,15 @@ $fs = [IO.File]::Create("$dist\setup\app.ico"); $w = New-Object IO.BinaryWriter 
 $w.Write([uint16]0); $w.Write([uint16]1); $w.Write([uint16]$sizes.Count); $off = 6 + 16 * $sizes.Count
 for ($i = 0; $i -lt $sizes.Count; $i++) { $s = $sizes[$i]; $w.Write([byte]($s % 256)); $w.Write([byte]($s % 256)); $w.Write([byte]0); $w.Write([byte]0); $w.Write([uint16]1); $w.Write([uint16]32); $w.Write([uint32]$pngs[$i].Length); $w.Write([uint32]$off); $off += $pngs[$i].Length }
 foreach ($p in $pngs) { $w.Write($p) }; $w.Close()
+# "send report" button: the developer's Telegram bot (secrets\telegram.json, git-ignored: {"token": "...", "chat": "..."}).
+# Without it the package is built as before and the app only saves reports to the Desktop.
+$tg = Join-Path $PSScriptRoot 'secrets\telegram.json'
+if (Test-Path $tg) {
+  $t = Get-Content $tg -Raw | ConvertFrom-Json
+  if (-not ($t.token -match '^\d+:[\w-]{30,}$') -or -not ($t.chat -match '^-?\d+$')) { throw 'secrets\telegram.json: token or chat id missing/invalid' }
+  [IO.File]::WriteAllText("$dist\setup\report-target.json", (@{ token = $t.token; chat = [string]$t.chat } | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding($false)))
+  Write-Host 'ok  report-target.json (Telegram report bot)'
+} else { Write-Warning 'secrets\telegram.json not found - the "send report" button will only save to the Desktop' }
 foreach ($f in Get-ChildItem "$dist\setup" -Filter *.ps1 -File) {
   $t = [IO.File]::ReadAllText($f.FullName, [Text.Encoding]::UTF8)
   [IO.File]::WriteAllText($f.FullName, $t, (New-Object Text.UTF8Encoding($true)))

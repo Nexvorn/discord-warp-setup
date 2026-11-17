@@ -53,7 +53,8 @@ foreach ($name in $script:DW_Bins.Keys) {
   if (-not (Test-Path $p)) { Fail "ملف ناقص في الحزمة: bin\$name`nانسخ المجلد كاملاً من جديد." "missing $name" }
   if ((Get-FileHash $p -Algorithm SHA256).Hash.ToLower() -ne $script:DW_Bins[$name].sha) { Fail "الملف bin\$name تالف أو مختلف عن النسخة الرسمية." "sha256 mismatch $name" } }
 Log 'package files: SHA-256 OK'
-$ErrorActionPreference = 'Continue'; $code = curl.exe -s --max-time 8 -o NUL -w "%{http_code}" http://cp.cloudflare.com/generate_204; $ErrorActionPreference = 'Stop'
+# .NET request, not curl.exe: since 2026-11-17 Defender flags "PowerShell starts curl.exe with a URL" as ClickFix (ClickFix.ML.J) and blocks it
+$code = try { [string][int](Invoke-WebRequest -Uri 'http://cp.cloudflare.com/generate_204' -UseBasicParsing -TimeoutSec 8).StatusCode } catch { 'error' }
 if ($code -ne '204') { Fail 'لا يوجد اتصال بالإنترنت. تأكد من الإنترنت ثم حاول مرة أخرى.' "internet check http=$code" }
 $def = Get-NetRoute -DestinationPrefix 0.0.0.0/0 -ErrorAction SilentlyContinue | Sort-Object RouteMetric | Select-Object -First 1
 $nic = if ($def) { Get-NetAdapter -InterfaceIndex $def.ifIndex -ErrorAction SilentlyContinue }
@@ -100,6 +101,7 @@ $tmpX = Join-Path $env:TEMP "dw-engine-$stamp"; Expand-Archive $zip $tmpX -Force
 Copy-Item (Get-ChildItem $tmpX -Filter '*.exe' | Select-Object -First 1).FullName $engineExe -Force; Remove-Item $tmpX -Recurse -Force
 foreach ($f in 'App.ps1', 'DiscordWarpLib.ps1', 'Dialog.ps1', 'Update.ps1', 'Uninstall.ps1', 'Engine.ps1', 'version.txt') { Copy-Item (Join-Path $PSScriptRoot $f) $scripts -Force }
 Copy-Item (Join-Path $PSScriptRoot 'payload\*') $scripts -Recurse -Force
+if (Test-Path (Join-Path $PSScriptRoot 'report-target.json')) { Copy-Item (Join-Path $PSScriptRoot 'report-target.json') $scripts -Force }   # "send report" Telegram bot (optional)
 Copy-Item (Join-Path $PSScriptRoot 'app.ico') $prog -Force
 $ver = (Get-Content (Join-Path $PSScriptRoot 'version.txt') -Raw).Trim()
 Set-Content -LiteralPath (Join-Path $data 'version.txt') -Value $ver -Encoding ASCII
